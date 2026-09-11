@@ -21,8 +21,8 @@ def connect() -> psycopg.Connection:
 
 def create_schema(conn: psycopg.Connection) -> None:
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS faces(
-        id bigserial PRIMARY KEY
+        CREATE TABLE IF NOT EXISTS photos(
+        id bigserial PRIMARY KEY,
         path text UNIQUE NOT NULL
         )
     """)

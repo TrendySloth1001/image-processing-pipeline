@@ -20,9 +20,9 @@ def list_photos(input_dir: Path) -> list[Path]:
 
 def load_photo(path: Path) -> np.ndarray:
     img = Image.open(path)
-    img = ImageOps.exif_transpose(img)  # rotate the image to the right
+    img = ImageOps.exif_transpose(img)  # turn sideways phone photos upright (EXIF flag)
     img = img.convert("RGB")  # discard alpha channel if present
-    arr = np.asarray(img)[:,:,::3]
+    arr = np.asarray(img)[:,:,::-1]  # RGB -> BGR
     return np.ascontiguousarray(arr)  # contiguous, writable, C order
 
 

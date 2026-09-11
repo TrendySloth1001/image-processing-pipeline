@@ -13,7 +13,7 @@ from pipeline.entities import Face
 
 def face_size(face: Face) -> float:
     x1, y1, x2, y2 = face.bbox
-    return float(max(x2 - x1, y2 - y1))
+    return float(min(x2 - x1, y2 - y1))
 
 def blur_score(aligned: np.ndarray) -> float:
     gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
@@ -39,5 +39,4 @@ def score_face(face: Face) -> None:
     blur = blur_score(face.aligned)
     yaw = yaw_ratio(face)
     face.is_strong = size >= STRONG_FACE_SIZE and blur >= MIN_BLUR_SCORE and yaw <= MAX_YAW_RATIO
-    face.quality = face.det_score * min(size / STRONG_FACE_SIZE ,0.1) * (1 - min(yaw,0.1))
-
+    face.quality = face.det_score * min(size / STRONG_FACE_SIZE, 1.0) * (1 - min(yaw, 1.0))

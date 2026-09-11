@@ -13,48 +13,56 @@ from pipeline.entities import Face
 
 
 def cluster_strong_faces(faces: list[Face]) -> None:
-    """Group the strong faces into people by setting face.person_id to 0, 1, 2, ..."""
-    # 1. strong = the faces with is_strong True.
-    # 2. If there are fewer than 2, give each one its own person_id and return
-    #    (the clustering below needs at least 2 faces).
-    # 3. X = np.stack([f.embedding for f in strong])  -> N x 512.
-    # 4. labels = AgglomerativeClustering(n_clusters=None, metric="cosine", linkage="average",
-    #                                     distance_threshold=CLUSTER_DISTANCE).fit_predict(X)
-    #    "average" linkage merges two groups only if their faces are close ON AVERAGE,
-    #    so one odd photo can't glue two people together.
-    # 5. Set strong[i].person_id = int(labels[i]).
-    raise NotImplementedError
+    strong = [f for f in faces if f.is_strong]
+    if len(strong) < 2:
+        for i, face  in enumerate(strong):
+            face.person_id = i
+        return
+    x = np.array([f.embedding for f in strong])
+    clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=CLUSTER_DISTANCE,
+                                         metric='cosine', linkage='average')
+    clustering.fit_predict(x)
+    for face, person_id in zip(strong, clustering.labels_):
+        face.person_id = int(person_id)
 
 
 def person_centroids(faces: list[Face]) -> dict[int, np.ndarray]:
-    """Each person's average face: person_id -> embedding of length 1."""
-    # 1. Group the embeddings of faces with a person_id (skip None).
-    # 2. For each person: take the mean of their embeddings, then divide by its norm.
-    raise NotImplementedError
+    #Each person's average face: person_id -> embedding of length 1
+    by_person: dict[int, list[np.ndarray]] = {}
+    for face in faces:
+        if face.person_id is not None:
+            by_person.setdefault(face.person_id, []).append(face.embedding)
+    centroids = {}
+    for person_id, embeddings in by_person.items():
+        mean = np.mean(embeddings, axis=0)
+        centroids[person_id] = mean / np.linalg.norm(mean)
+    return centroids
 
 
 def attach_weak_faces(faces: list[Face]) -> None:
-    """Give each weak face the nearest person, but only if it is close enough."""
-    # 1. centroids = person_centroids(faces). Right after cluster_strong_faces, only
-    #    strong faces have a person_id, so centroids come from strong faces only.
-    # 2. If there are no centroids, return.
-    # 3. For each face with is_strong False:
-    #    - distance to a person = 1 - (face.embedding @ centroid)
-    #    - find the closest person
-    #    - if that distance < ATTACH_DISTANCE: face.person_id = that person
-    #    - otherwise leave person_id as None (it goes to "unsorted")
-    raise NotImplementedError
-
+    centroids = person_centroids(faces)
+    if not centroids:
+        return
+    person_ids = list(centroids)
+    C = np.stack([centroids[pid] for pid in person_ids])
+    for face in faces:
+        if face.is_strong:
+            continue
+        distances = 1 - C @ face.embedding
+        best = int(np.argmin(distances))
+        if distances[best] < ATTACH_DISTANCE:
+            face.person_id = person_ids[best]
 
 def split_same_photo_conflicts(faces: list[Face]) -> None:
-    """Optional, do it after everything else works.
-
-    Two faces in the same photo are almost never the same person. If a person
-    ended up with two faces from one photo, keep the one closer to that person's
-    average face and set the other's person_id to None.
-    """
-    # 1. centroids = person_centroids(faces)
-    # 2. Group faces by (person_id, photo_path), skipping person_id None.
-    # 3. In any group with 2+ faces, keep the face with the highest (embedding @ centroid);
-    #    set person_id = None on the rest.
-    raise NotImplementedError
+    centroids = person_centroids(faces)
+    grouped = {}
+    for face in faces:
+        if face.person_id is not None:
+            grouped.setdefault((face.person_id, face.photo_path), []).append(face)
+    for (person_id, _), group in grouped.items():
+        if len(group) < 2:
+            continue
+        keep = max(group, key = lambda f: f.embedding @ centroids[person_id])
+        for face in group:
+            if face is not keep:
+                face.person_id = None

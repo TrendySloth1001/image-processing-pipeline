@@ -25,7 +25,7 @@ DET_THRESHOLD = 0.5          # detections with a lower confidence are dropped
 MIN_FACE_SIZE = 40       # px, shorter side of the face box; smaller faces are ignored entirely
 STRONG_FACE_SIZE = 80    # px; a face must be at least this big to help build groups
 MIN_BLUR_SCORE = 50.0    # sharpness of the aligned crop; below this it's too blurry to build groups
-MAX_YAW_RATIO = 0.35     # how far the head may be turned (0 = looking straight at the camera)
+MAX_YAW_RATIO = 0.5      # how far the head may be turned (0 = looking straight at the camera)
 
 # --- Clustering (cosine distance = 1 - similarity; 0 = identical, 1 = unrelated) ---
 CLUSTER_DISTANCE = 0.55  # strong faces closer than this (on average) become one person

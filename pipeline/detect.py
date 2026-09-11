@@ -11,7 +11,7 @@ from pipeline.entities import Face
 
 
 def load_detector() -> SCRFD:
-    detector = get_model(DETECTOR_MODEL)
+    detector = get_model(str(DETECTOR_MODEL), providers=["CPUExecutionProvider"])
     detector.prepare(ctx_id=-1, det_thresh=DET_THRESHOLD, input_size=DET_INPUT_SIZE)
     return detector
 
