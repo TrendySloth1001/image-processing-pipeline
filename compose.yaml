@@ -1,0 +1,28 @@
+services:
+  app:
+    build: .
+    image: face-pipeline:dev
+    volumes:
+      - .:/app
+    environment:
+      DATABASE_URL: postgresql://faces:faces@db:5432/faces
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: faces
+      POSTGRES_PASSWORD: faces
+      POSTGRES_DB: faces
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faces -d faces"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
