@@ -25,6 +25,13 @@ docker compose run --rm app python
 After changing `requirements.txt` or the `Dockerfile`, run `docker compose build` again.
 Code changes need no rebuild: the project folder is mounted into the container.
 
+## Editor (VS Code)
+
+Open the project with **Dev Containers: Reopen in Container** (Cmd+Shift+P). VS Code then runs
+inside the app container, so imports resolve and autocomplete works without installing anything
+on the Mac. Its terminal is inside the container too: run `python` or `python -m pipeline.run`
+directly, without `docker compose run`.
+
 ## Build order
 
 Every function in `pipeline/` is a stub with step-by-step comments. Replace each

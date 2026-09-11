@@ -1,0 +1,19 @@
+{
+  // Opens VS Code *inside* the app container, so the editor sees the packages installed there
+  // (cv2, numpy, insightface, ...) without installing anything on the Mac.
+  "name": "face-pipeline",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "app",
+  "runServices": ["app", "db"],
+  "workspaceFolder": "/app",
+  // The image's default command is a one-off check that exits; keep the container running instead.
+  "overrideCommand": true,
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "ms-python.vscode-pylance"],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
+}
