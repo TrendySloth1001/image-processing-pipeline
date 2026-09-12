@@ -1,14 +1,25 @@
+x-app: &app
+  build: .
+  image: face-pipeline:dev
+  volumes:
+    - .:/app
+  environment:
+    DATABASE_URL: postgresql://faces:faces@db:5432/faces
+  depends_on:
+    db:
+      condition: service_healthy
+
 services:
+  # One-off commands and the VS Code dev container.
   app:
-    build: .
-    image: face-pipeline:dev
-    volumes:
-      - .:/app
-    environment:
-      DATABASE_URL: postgresql://faces:faces@db:5432/faces
-    depends_on:
-      db:
-        condition: service_healthy
+    <<: *app
+
+  # Test UI: http://localhost:8000 (only reachable from this Mac).
+  web:
+    <<: *app
+    command: uvicorn web.app:app --host 0.0.0.0 --port 8000 --reload --reload-dir pipeline --reload-dir web
+    ports:
+      - "127.0.0.1:8000:8000"
 
   db:
     image: pgvector/pgvector:pg17

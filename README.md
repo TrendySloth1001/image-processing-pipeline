@@ -32,6 +32,20 @@ inside the app container, so imports resolve and autocomplete works without inst
 on the Mac. Its terminal is inside the container too: run `python` or `python -m pipeline.run`
 directly, without `docker compose run`.
 
+## Test UI
+
+```sh
+docker compose up -d web     # then open http://localhost:8000
+```
+
+Upload a few photos, press **Run pipeline**, and browse the people it found. The run happens in a
+background thread and every step appears in the **Processing** panel on the right, with timings;
+the page refreshes itself each second while it runs (a plain `<meta refresh>`, no JavaScript) and
+the steps are also saved to `data/output/run_log.json`. **Face boxes** shows every photo with each
+face boxed and numbered by person: the quickest way to see why a face landed where it did.
+The UI only displays what the pipeline writes to `data/output/`.
+Code changes reload the server automatically; `docker compose logs -f web` shows its output.
+
 ## Build order
 
 Every function in `pipeline/` is a stub with step-by-step comments. Replace each

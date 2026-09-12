@@ -8,7 +8,7 @@ is worse for users than a missing photo.
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
 
-from pipeline.config import ATTACH_DISTANCE, CLUSTER_DISTANCE
+from pipeline.config import ATTACH_DISTANCE, CLUSTER_DISTANCE, MIN_PHOTOS_PER_PERSON
 from pipeline.entities import Face
 
 
@@ -66,3 +66,24 @@ def split_same_photo_conflicts(faces: list[Face]) -> None:
         for face in group:
             if face is not keep:
                 face.person_id = None
+
+
+def rank_people(faces: list[Face]) -> None:
+    """Renumber people 1, 2, 3, ... by how many photos they are in, most first.
+
+    People in fewer than MIN_PHOTOS_PER_PERSON photos become unassigned, so the numbers
+    match the person_NNN folders, the database and the web UI.
+    """
+    photos_by_person: dict[int, set] = {}
+    for face in faces:
+        if face.person_id is not None:
+            photos_by_person.setdefault(face.person_id, set()).add(face.photo_path)
+    # Ties are broken by first photo name, so the same photos always give the same numbers.
+    ranked = sorted(photos_by_person, key=lambda pid: (-len(photos_by_person[pid]), min(photos_by_person[pid])))
+    new_ids = {}
+    for pid in ranked:
+        if len(photos_by_person[pid]) >= MIN_PHOTOS_PER_PERSON:
+            new_ids[pid] = len(new_ids) + 1
+    for face in faces:
+        if face.person_id is not None:
+            face.person_id = new_ids.get(face.person_id)

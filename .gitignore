@@ -1,0 +1,28 @@
+# Photos and pipeline results never belong in git: they are people's faces.
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+
+# Images and video anywhere else, in case photos land outside data/.
+# To commit one on purpose: git add -f path/to/image.png
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.heic
+*.heif
+*.gif
+*.bmp
+*.tiff
+*.mp4
+*.mov
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# macOS and editors
+.DS_Store
+.vscode/

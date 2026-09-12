@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Face boxes{% endblock %}
+{% block content %}
+{% set v = summary.finished_at if summary else 0 %}
+<a class="back" href="/">← All people</a>
+<h1>Face boxes</h1>
+<p class="muted">
+  Every photo from the last run. Box colour and <b>P3</b> = person 3. Grey <b>?</b> = not in any
+  person folder. Thin box and <b>weak</b> = too small, blurry or turned to start a group; it can only join one.
+</p>
+{% if names %}
+<div class="debug">
+  {% for name in names %}
+  <figure>
+    <a href="/output/_debug/{{ name|urlencode }}?v={{ v }}" target="_blank">
+      <img src="/output/_debug/{{ name|urlencode }}?v={{ v }}" alt="{{ name }}" loading="lazy">
+    </a>
+    <figcaption>{{ name }}</figcaption>
+  </figure>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">Nothing yet. Run the pipeline first.</p>
+{% endif %}
+{% endblock %}

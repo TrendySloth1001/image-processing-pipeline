@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import numpy as np
-from insightface.model_zoo import get_model
+import onnxruntime as ort
 from insightface.model_zoo.scrfd import SCRFD
 
 from pipeline.config import DET_INPUT_SIZE, DET_THRESHOLD, DETECTOR_MODEL
@@ -11,7 +11,10 @@ from pipeline.entities import Face
 
 
 def load_detector() -> SCRFD:
-    detector = get_model(str(DETECTOR_MODEL), providers=["CPUExecutionProvider"])
+    # insightface's get_model() wraps every detection file in its RetinaFace class, so build
+    # the SCRFD class directly: SCRFD's own code runs the SCRFD-10GF model (det_10g.onnx).
+    session = ort.InferenceSession(str(DETECTOR_MODEL), providers=["CPUExecutionProvider"])
+    detector = SCRFD(model_file=str(DETECTOR_MODEL), session=session)
     detector.prepare(ctx_id=-1, det_thresh=DET_THRESHOLD, input_size=DET_INPUT_SIZE)
     return detector
 

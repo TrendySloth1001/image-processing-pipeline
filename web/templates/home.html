@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{# While the pipeline runs, reload once a second and jump to the end of the step list. #}
+{% block head %}{% if running %}<meta http-equiv="refresh" content="1; url=/#end">{% endif %}{% endblock %}
+{% block content %}
+{% set v = summary.finished_at if summary else 0 %}
+
+{% if error %}<p class="banner error">{{ error }}</p>{% endif %}
+
+<div class="layout">
+<div>
+
+<section class="card">
+  <h2>1. Add photos</h2>
+  <form class="row" action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="files" multiple accept="image/*,.heic,.heif" required>
+    <button type="submit">Upload</button>
+  </form>
+  <p class="muted">{{ inputs|length }} photo{{ '' if inputs|length == 1 else 's' }} in data/input</p>
+  {% if inputs %}
+  <div class="thumbs">
+    {% for name in inputs %}<img src="/input/{{ name|urlencode }}" alt="{{ name }}" title="{{ name }}" loading="lazy">{% endfor %}
+  </div>
+  <form action="/clear" method="post">
+    <button class="danger" type="submit" {% if running %}disabled{% endif %}>Delete all photos and results</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>2. Run the pipeline</h2>
+  <form class="row" action="/run" method="post">
+    <button type="submit" {% if not inputs or running %}disabled{% endif %}>{{ "Running…" if running else "Run pipeline" }}</button>
+    <span class="muted">Runs on the CPU, a few seconds per photo. Each step appears on the right.</span>
+  </form>
+  {% if summary %}
+  <p class="stats">
+    Last run: <b>{{ summary.photos }}</b> photos · <b>{{ summary.faces }}</b> faces ({{ summary.strong }} strong)
+    · <b>{{ summary.people }}</b> people · <b>{{ summary.unassigned }}</b> unassigned faces
+    {%- if summary.skipped %} · {{ summary.skipped }} unreadable{% endif %} · {{ summary.seconds }} s
+    {%- if summary.detector %} · detector: <b>{{ summary.detector }}</b>{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>3. People</h2>
+  {% if people %}
+  <div class="people">
+    {% for p in people %}
+    <a class="person" href="/people/{{ p.folder }}">
+      <img src="/output/{{ p.folder }}/_cover.jpg?v={{ v }}" alt="Person {{ p.number }}">
+      <span>Person {{ p.number }}</span>
+      <small>{{ p.count }} photo{{ '' if p.count == 1 else 's' }}</small>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">No people yet. Upload photos and run the pipeline.</p>
+  {% endif %}
+  {% if summary %}
+  <p class="links">
+    {% for o in others %}<a href="/people/{{ o.folder }}">{{ o.label }} ({{ o.count }})</a>{% endfor %}
+    <a href="/photos">All photos with face boxes</a>
+  </p>
+  {% endif %}
+</section>
+
+</div>
+
+<aside class="card log-panel">
+  <h2>Processing</h2>
+  {% if running %}
+    <p class="muted running">Running… {{ run_log.seconds }} s</p>
+  {% elif run_log and run_log.error %}
+    <p class="banner error">{{ run_log.error }}</p>
+  {% elif run_log %}
+    <p class="muted">Finished in {{ run_log.seconds }} s</p>
+  {% else %}
+    <p class="muted">Nothing yet. Press <b>Run pipeline</b> and each step shows up here.</p>
+  {% endif %}
+  {% if run_log and run_log.entries %}
+  <ol class="log">
+    {% for t, line in run_log.entries %}
+    <li class="{{ 'sub' if line.startswith('  ') else 'step' }}">
+      <span class="t">{{ '%.1f'|format(t) }}s</span><span class="msg">{{ line.strip() }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  <div id="end"></div>
+  {% endif %}
+</aside>
+
+</div>
+{% endblock %}

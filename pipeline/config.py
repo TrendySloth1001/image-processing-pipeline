@@ -30,4 +30,6 @@ MAX_YAW_RATIO = 0.5      # how far the head may be turned (0 = looking straight 
 # --- Clustering (cosine distance = 1 - similarity; 0 = identical, 1 = unrelated) ---
 CLUSTER_DISTANCE = 0.55  # strong faces closer than this (on average) become one person
 ATTACH_DISTANCE = 0.50   # a weak face joins a person only if it is this close to their average face
-MIN_PHOTOS_PER_PERSON = 2  # people in fewer photos go to the "unsorted" folder
+# People in fewer photos go to the "unsorted" folder. 1 shows everyone, which is what you want
+# while testing; raise it to 2+ for a real gallery, where it hides strangers caught in the background.
+MIN_PHOTOS_PER_PERSON = 1

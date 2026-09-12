@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+{% set v = summary.finished_at if summary else 0 %}
+<a class="back" href="/">← All people</a>
+<div class="person-head">
+  {% if has_cover %}<img class="cover" src="/output/{{ folder }}/_cover.jpg?v={{ v }}" alt="{{ title }}">{% endif %}
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="muted">{{ photos|length }} photo{{ '' if photos|length == 1 else 's' }}</p>
+  </div>
+</div>
+<div class="grid">
+  {% for name in photos %}
+  <a href="/output/{{ folder }}/{{ name|urlencode }}?v={{ v }}" target="_blank">
+    <img src="/output/{{ folder }}/{{ name|urlencode }}?v={{ v }}" alt="{{ name }}" title="{{ name }}" loading="lazy">
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}
