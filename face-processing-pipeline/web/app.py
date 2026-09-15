@@ -212,5 +212,6 @@ def clear():
     for folder in (INPUT_DIR, OUTPUT_DIR):
         shutil.rmtree(folder, ignore_errors=True)
         folder.mkdir(parents=True)
+        (folder / ".gitkeep").touch()  # both folders are tracked in git
     current_run = None
     return home_redirect()

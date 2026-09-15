@@ -1,25 +1,128 @@
-x-app: &app
-  build: .
+# Repo layout: face-processing-pipeline/ (stateless Python service) + frontend/ (Next.js app).
+# The pipeline owns no data: jobs come off Redis, photos come from MinIO, results go out by webhook.
+# The frontend owns its own `gallery` database (Postgres + pgvector) with the faces and people.
+x-env: &env
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: faces
+  S3_ACCESS_KEY: minioadmin
+  S3_SECRET_KEY: minioadmin
+  WEBHOOK_SECRET: dev-secret
+  DATABASE_URL: postgresql://faces:faces@db:5432/faces  # only the folder-based test UI uses this
+
+x-python-service: &python-service
+  build: ./face-processing-pipeline
   image: face-pipeline:dev
   volumes:
-    - .:/app
-  environment:
-    DATABASE_URL: postgresql://faces:faces@db:5432/faces
+    - ./face-processing-pipeline:/app
+  environment: *env
   depends_on:
     db:
       condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_started
 
 services:
+  # --- The microservice: producer API in, webhook out ---
+
+  # POST /v1/jobs and /v1/jobs/upload; docs at http://localhost:8080/docs
+  api:
+    <<: *python-service
+    command: uvicorn service.api:app --host 0.0.0.0 --port 8080 --reload --reload-dir service --reload-dir pipeline
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  # Consumes jobs, finds faces, delivers each result to that job's webhook until it is acknowledged.
+  # Scale it with: docker compose up -d --scale worker=3
+  worker:
+    <<: *python-service
+    command: python -m service.worker
+
+  # --- The app that uses it ---
+
+  # Next.js: upload -> S3 -> job; webhook -> faces + embeddings in its own database.
+  frontend:
+    image: node:24-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      WATCHPACK_POLLING: "true" # file watching across the Docker bind mount
+      DATABASE_URL: postgres://faces:faces@db:5432/gallery
+      PIPELINE_URL: http://api:8080
+      CALLBACK_URL: http://frontend:3000/api/webhooks/faces
+      WEBHOOK_SECRET: dev-secret
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: faces
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  # --- Development helpers ---
+
   # One-off commands and the VS Code dev container.
   app:
-    <<: *app
+    <<: *python-service
 
-  # Test UI: http://localhost:8000 (only reachable from this Mac).
+  # Folder-based test UI (data/input -> data/output): http://localhost:8000
   web:
-    <<: *app
+    <<: *python-service
     command: uvicorn web.app:app --host 0.0.0.0 --port 8000 --reload --reload-dir pipeline --reload-dir web
     ports:
       - "127.0.0.1:8000:8000"
+
+  # --- Infrastructure ---
+
+  # Gives the frontend its own database next to the pipeline's. Runs once, then exits.
+  db-init:
+    image: pgvector/pgvector:pg17
+    environment:
+      PGPASSWORD: faces
+    entrypoint: ["sh", "-c"]
+    # One list item, so the whole thing reaches `sh -c` as a single argument.
+    command:
+      - >
+        psql -h db -U faces -d faces -tc "SELECT 1 FROM pg_database WHERE datname='gallery'" | grep -q 1
+        || psql -h db -U faces -d faces -c "CREATE DATABASE gallery"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    ports:
+      - "127.0.0.1:9000:9000" # S3 API
+      - "127.0.0.1:9001:9001" # web console
 
   db:
     image: pgvector/pgvector:pg17
@@ -37,3 +140,6 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
+  miniodata:
+  frontend_node_modules:

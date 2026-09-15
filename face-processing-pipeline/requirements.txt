@@ -9,7 +9,12 @@ scikit-learn==1.9.1
 psycopg[binary]==3.3.5
 pgvector==0.5.0
 
-# Test UI (web/)
+# Service: queue in, webhook out
+redis==8.1.0
+boto3==1.43.93
+httpx==0.28.1
+
+# HTTP layer (producer API and the folder-based test UI)
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 python-multipart==0.0.32

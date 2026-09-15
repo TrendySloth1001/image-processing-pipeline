@@ -1,119 +1,187 @@
-# Face grouping prototype
+# Face processing
 
-Photos in `data/input/` → one folder per person in `data/output/`.
-Everything runs in Docker; nothing is installed on the host.
+A stateless face-processing microservice (queue in, webhook out) and a Next.js app that uses it.
+Everything runs in Docker; nothing is installed on the Mac.
 
 ```
-list photos → load (fix rotation) → SCRFD detect → drop tiny faces → align → quality
-→ ArcFace embed → save to Postgres → cluster strong faces → attach weak faces → export folders
+face-processing-pipeline/   Python service
+  service/                  the microservice: producer API, worker, queue, storage, webhook delivery
+  pipeline/                  the processing core: SCRFD detection, ArcFace embeddings, grouping
+  web/                       folder-based test UI, a development helper (http://localhost:8000)
+  scripts/                   check_env.py, echo_webhook.py
+  data/                      photos in, results out, for the folder-based UI (never committed)
+frontend/                   Next.js app (http://localhost:3000)
+compose.yaml                api + worker + frontend + Redis + MinIO + Postgres
 ```
 
-## Setup
+## Run it
 
 ```sh
-docker compose build                                    # Python 3.11 + insightface + SCRFD/ArcFace models
-docker compose up -d db                                 # Postgres 17 + pgvector
-docker compose run --rm app python scripts/check_env.py # should print "SCRFD found N faces" and the pgvector version
+docker compose build app
+docker compose up -d api worker frontend          # Redis, MinIO and Postgres start with them
+docker compose up -d --scale worker=3 worker      # more consumers, same queue
 ```
 
-Open a Python shell inside the container (used for the checks below):
+| What | Where |
+|---|---|
+| Producer API (docs) | http://localhost:8080/docs |
+| Next.js app | http://localhost:3000 |
+| MinIO console | http://localhost:9001 (minioadmin / minioadmin) |
+| Folder-based test UI | http://localhost:8000 |
+
+## The microservice
+
+```mermaid
+flowchart TD
+    A[Your app - producer] -->|POST /v1/jobs + callback_url| B[api]
+    B -->|photo| C[(MinIO)]
+    B -->|job id| D[[Redis stream face:jobs]]
+    D --> W[worker - stateless, N replicas]
+    C -.fetch.-> W
+    W -->|POST signed result| E[Your webhook - consumer]
+    E -->|2xx acknowledges| W
+    W -->|no ack: 0s, 5s, 30s, 2m, 10m, 30m, 1h, 2h| E
+```
+
+The service keeps no data of its own: no results table, no per-run state. A job carries everything
+the worker needs, and the result goes straight to the caller's webhook. Job bookkeeping and the
+pending result live in Redis, so any worker can take over any job.
+
+### Submit a job
 
 ```sh
-docker compose run --rm app python
+# photo already in the bucket, or any URL the worker can fetch
+curl -X POST localhost:8080/v1/jobs -H 'content-type: application/json' -d '{
+  "image": {"key": "incoming/abc.jpg"},
+  "callback_url": "http://your-app:3000/api/webhooks/faces",
+  "metadata": {"photo_id": "p_123"}
+}'
+
+# or hand over the bytes and let the API store them
+curl -F file=@photo.jpg -F callback_url=http://your-app:3000/api/webhooks/faces \
+     -F 'metadata={"photo_id":"p_123"}' localhost:8080/v1/jobs/upload
 ```
 
-After changing `requirements.txt` or the `Dockerfile`, run `docker compose build` again.
-Code changes need no rebuild: the project folder is mounted into the container.
+Both answer `202 {"job_id": "job_…", "status": "queued"}`.
+`GET /v1/jobs/{job_id}` reports `queued → processing → delivering → delivered`, or `dead` if the
+consumer never acknowledged, along with the attempt count and the last error.
 
-## Editor (VS Code)
+### Receive the result
 
-Open the project with **Dev Containers: Reopen in Container** (Cmd+Shift+P). VS Code then runs
-inside the app container, so imports resolve and autocomplete works without installing anything
-on the Mac. Its terminal is inside the container too: run `python` or `python -m pipeline.run`
-directly, without `docker compose run`.
+The worker POSTs this to `callback_url`:
 
-## Test UI
-
-```sh
-docker compose up -d web     # then open http://localhost:8000
+```json
+{
+  "job_id": "job_f142d02582ae4917bdf8",
+  "status": "succeeded",
+  "metadata": {"photo_id": "p_123"},
+  "image": {"width": 1280, "height": 886},
+  "detector": "SCRFD (det_10g.onnx)",
+  "embedding_model": "ArcFace (w600k_r50.onnx)",
+  "detected": 6,
+  "faces": [{"bbox": [...], "landmarks": [[x, y], ...], "det_score": 0.92,
+             "quality": 0.81, "is_strong": true, "embedding": [512 numbers]}],
+  "took_ms": 1600
+}
 ```
 
-Upload a few photos, press **Run pipeline**, and browse the people it found. The run happens in a
-background thread and every step appears in the **Processing** panel on the right, with timings;
-the page refreshes itself each second while it runs (a plain `<meta refresh>`, no JavaScript) and
-the steps are also saved to `data/output/run_log.json`. **Face boxes** shows every photo with each
-face boxed and numbered by person: the quickest way to see why a face landed where it did.
-The UI only displays what the pipeline writes to `data/output/`.
-Code changes reload the server automatically; `docker compose logs -f web` shows its output.
+On failure it delivers `{"status": "failed", "error": "..."}` for the same job, so the producer
+always hears back. Headers: `x-face-job-id`, `x-face-attempt`, and `x-face-signature`, an
+HMAC-SHA256 of the exact body with `WEBHOOK_SECRET`. Verify it before trusting the payload:
 
-## Build order
-
-Every function in `pipeline/` is a stub with step-by-step comments. Replace each
-`raise NotImplementedError` with code, in this order. Run each step's check before moving on.
-
-### 1. `pipeline/config.py`
-Read it. Nothing to write; these are the paths and the numbers you'll tune later.
-
-### 2. `pipeline/ingest.py` → `list_photos`, `load_photo`
-Put some phone photos in `data/input/`, then:
-```python
-from pipeline.config import INPUT_DIR
-from pipeline.ingest import list_photos, load_photo
-photos = list_photos(INPUT_DIR); len(photos)
-load_photo(photos[0]).shape            # (height, width, 3)
+```ts
+const expected = "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+const signature = request.headers.get("x-face-signature") ?? "";
+const ok = expected.length === signature.length &&
+           crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 ```
 
-### 3. `pipeline/detect.py` → `load_detector`, `detect_faces`
-```python
-from pipeline.detect import load_detector, detect_faces
-det = load_detector()
-img = load_photo(photos[0])
-faces = detect_faces(det, img, photos[0])
-[(f.bbox.round(), round(f.det_score, 2)) for f in faces]
+**Acknowledgement.** Any 2xx closes the job. Anything else, including a timeout, is retried on the
+schedule above; the computed result waits in Redis, so a retry re-sends rather than re-processes.
+After the last attempt the job is marked `dead` and its id is pushed to the `face:deliveries:dead`
+list. Delivery is at-least-once, so treat `job_id` as an idempotency key on your side.
+
+### Settings
+
+`REDIS_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `WEBHOOK_SECRET`,
+`WEBHOOK_TIMEOUT`, `RETRY_SCHEDULE` (comma-separated seconds), `RESULT_TTL`, `CLAIM_IDLE_MS`.
+Defaults are in `service/settings.py`.
+
+## The app (frontend)
+
+```
+browser → POST /api/upload → MinIO + POST /v1/jobs → queue → worker
+                                                              ↓ signed result
+        gallery database ← POST /api/webhooks/faces ←──────────┘
 ```
 
-### 4. `pipeline/embed.py` → `load_embedder`, `align_face`, `embed_faces`
-```python
-import cv2, numpy as np
-from pipeline.embed import load_embedder, align_face, embed_faces
-emb = load_embedder()
-for f in faces: align_face(img, f)
-cv2.imwrite("data/output/debug_face.jpg", faces[0].aligned)   # open it on the Mac: a centred face
-embed_faces(emb, faces)
-faces[0].embedding.shape, float(np.linalg.norm(faces[0].embedding))   # (512,), 1.0
-```
-Compare two faces with `float(a.embedding @ b.embedding)`. The same person usually scores
-around 0.4 or more; different people usually score below 0.2.
+The app owns its `gallery` database (Postgres + pgvector, created by the `db-init` service);
+the pipeline never touches it.
 
-### 5. `pipeline/quality.py` → `face_size`, `blur_score`, `yaw_ratio`, `is_usable`, `score_face`
-```python
-from pipeline.quality import score_face
-for f in faces: score_face(f); print(round(f.quality, 2), f.is_strong)
+| Table | What's in it |
+|---|---|
+| `photos` | object key, file name, job id, status, width/height, error |
+| `faces` | photo id, person id, bbox, det_score, quality, is_strong, `vector(512)` embedding |
+| `people` | just an id, which faces point at |
+
+Tables and the HNSW cosine index are created on first use by `ensureSchema()` in
+`src/db/index.ts`, so there is no migration tool to run.
+
+**Grouping happens twice over.** On arrival, the webhook stores each face and finds its nearest
+neighbour in pgvector (`embedding <=> $1`), ignoring faces from the same photo: above 0.45
+similarity it joins that person, while a weak face needs 0.5 and never starts a new person, so
+people appear seconds after an upload. On demand, **Regroup everything** re-clusters the library
+with average linkage the way the batch pipeline does, which repairs groups that drifted apart. It
+renumbers people, so person URLs change after a regroup.
+
+**Webhook safety:** every delivery is checked against the HMAC signature (401 otherwise), and the
+handler is idempotent — it replaces a photo's faces instead of appending, because the pipeline
+retries until it gets a 2xx.
+
+Settings are in `src/lib/config.ts`: `DATABASE_URL`, `PIPELINE_URL`, `CALLBACK_URL`,
+`WEBHOOK_SECRET`, `S3_*`, and the two thresholds `SAME_FACE` and `ATTACH_FACE`.
+
+## The processing core
+
+```
+load image (fix rotation) → SCRFD detect → drop tiny faces → align to 112×112 → quality score
+→ ArcFace embedding
 ```
 
-### 6. `pipeline/db.py` → `connect`, `create_schema`, `reset`, `save_photo_faces`, `save_person_ids`
-```python
-from pipeline.db import connect, create_schema
-conn = connect(); create_schema(conn)
-```
-Then look at the table from your terminal:
-`docker compose exec db psql -U faces -d faces -c "\d faces"`
+| Module | What it does |
+|---|---|
+| `pipeline/ingest.py` | Loads a photo from a path or from bytes, the right way up (EXIF, HEIC). |
+| `pipeline/detect.py` | SCRFD-10GF: face boxes and 5 landmarks. |
+| `pipeline/quality.py` | Size, blur and head angle; marks a face strong or weak. |
+| `pipeline/embed.py` | Aligns each face and turns it into 512 ArcFace numbers. |
+| `pipeline/cluster.py` | Groups strong faces, attaches weak ones, numbers people by photo count. |
+| `pipeline/db.py`, `export.py` | Used only by the folder-based test UI, not by the microservice. |
 
-### 7. `pipeline/cluster.py` → `cluster_strong_faces`, `person_centroids`, `attach_weak_faces`
-### 8. `pipeline/export.py` → `group_photos_by_person`, `pick_cover_face`, `export_people`
-### 9. `pipeline/run.py` → `main`
-Steps 7–9 are easiest to test together:
-```sh
-docker compose run --rm app python -m pipeline.run
-```
-Then open `data/output/` in Finder.
+## Development helpers
 
-### 10. Tune
-- One person split across several folders → raise `CLUSTER_DISTANCE` a little.
-- Different people mixed in one folder → lower it.
-- Good photos stuck in `unsorted/` → raise `ATTACH_DISTANCE` a little, or relax the quality numbers.
-- After that works, try `cluster.split_same_photo_conflicts`.
+**Folder-based UI** (http://localhost:8000): drop photos in, press **Run pipeline**, and browse the
+people it found. Every step appears in the Processing panel on the right; **Face boxes** shows each
+photo with its faces boxed and numbered. It writes `data/output/` and uses Postgres, which the
+microservice does not.
+
+**Command line:** `docker compose run --rm app python -m pipeline.run` for the folder pipeline, and
+`docker compose run --rm app python scripts/check_env.py` to check models and database.
+
+**Stand-in consumer:** `scripts/echo_webhook.py` prints deliveries, verifies the signature and
+acknowledges them; `FAIL_TIMES=2` makes it reject the first two attempts so retries can be tested.
+
+**Editor:** open the project with **Dev Containers: Reopen in Container**. VS Code then runs inside
+the app container, so imports resolve without installing anything on the Mac. It opens
+`face-processing-pipeline/`; edit `frontend/` in a normal window.
+
+## Tuning the grouping
+
+In `pipeline/config.py`: raise `CLUSTER_DISTANCE` if one person is split across groups, lower it if
+different people are mixed together; `MIN_PHOTOS_PER_PERSON` is 1 while testing so everyone shows.
+The same person photographed as a child, or in black and white, scores far below the same-person
+range and needs a manual merge rather than a looser threshold.
 
 ## Notes
-- Docker on a Mac can't use the GPU, so everything runs on the CPU. Expect roughly a few photos per second.
+
+- Docker on a Mac can't use the GPU, so everything runs on the CPU: a few photos per second.
 - InsightFace's pretrained SCRFD/ArcFace weights (buffalo_l) are for non-commercial research only.

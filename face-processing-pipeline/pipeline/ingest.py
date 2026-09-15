@@ -1,5 +1,6 @@
 """Ingest: find the photos and load each one the right way up."""
 
+import io
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +19,17 @@ def list_photos(input_dir: Path) -> list[Path]:
     )
 
 
-def load_photo(path: Path) -> np.ndarray:
-    img = Image.open(path)
+def _to_bgr(img: Image.Image) -> np.ndarray:
     img = ImageOps.exif_transpose(img)  # turn sideways phone photos upright (EXIF flag)
     img = img.convert("RGB")  # discard alpha channel if present
     arr = np.asarray(img)[:,:,::-1]  # RGB -> BGR
     return np.ascontiguousarray(arr)  # contiguous, writable, C order
 
 
+def load_photo(path: Path) -> np.ndarray:
+    return _to_bgr(Image.open(path))
+
+
+def load_image_bytes(data: bytes) -> np.ndarray:
+    """Same, for a photo held in memory: the microservice never touches the disk."""
+    return _to_bgr(Image.open(io.BytesIO(data)))

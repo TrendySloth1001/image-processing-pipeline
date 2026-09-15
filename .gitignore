@@ -1,8 +1,8 @@
 # Photos and pipeline results never belong in git: they are people's faces.
-data/input/*
-data/output/*
-!data/input/.gitkeep
-!data/output/.gitkeep
+face-processing-pipeline/data/input/*
+face-processing-pipeline/data/output/*
+!face-processing-pipeline/data/input/.gitkeep
+!face-processing-pipeline/data/output/.gitkeep
 
 # Images and video anywhere else, in case photos land outside data/.
 # To commit one on purpose: git add -f path/to/image.png
@@ -22,6 +22,14 @@ data/output/*
 __pycache__/
 *.py[cod]
 .venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.env*.local
 
 # macOS and editors
 .DS_Store

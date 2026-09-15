@@ -60,6 +60,7 @@ def export_people(photos: list[Path], faces: list[Face], output_dir: Path) -> No
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
+    (output_dir / ".gitkeep").touch()  # the folder is tracked in git; wiping it must not remove that
 
     photos_by_person = group_photos_by_person(faces)
     for person_id in sorted(photos_by_person):
