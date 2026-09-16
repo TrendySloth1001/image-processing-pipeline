@@ -45,10 +45,13 @@ def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) ->
                 poster = video.poster(frame)
             found = detect.detect_faces(detector, frame, NO_FILE)
             detected += len(found)
-            faces = [f for f in found if quality.is_usable(f)]
+            # Video's own size and blur bars: the photo ones discard faces that go on to match
+            # their person perfectly well. Junk let in by the lower bars is caught later instead,
+            # by having to survive more than one sampled frame.
+            faces = [f for f in found if quality.is_usable(f, quality.VIDEO)]
             for face in faces:
                 embed.align_face(frame, face)
-                quality.score_face(face)
+                quality.score_face(face, quality.VIDEO)
             # Every face of the frame in one batch: the tracker needs embeddings to decide who
             # is who, and embedding costs a seventh of detecting, so there is nothing to save
             # by embedding lazily.

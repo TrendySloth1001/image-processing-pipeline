@@ -151,6 +151,7 @@ the pipeline never touches it.
 | `photos` | object key, file name, `kind` (photo or video), job id, status, width/height, duration, poster key, error |
 | `faces` | photo id, person id, bbox, det_score, quality, is_strong, `vector(512)` embedding, and for a video face its track, time and still |
 | `people` | just an id, which faces point at |
+| `links` | what you have told it: two faces are the `same` person, or `different` people |
 
 A video is a row in `photos` too. Everything that joins faces to people then works on videos
 without knowing they exist — which is the whole reason it isn't a table of its own.
@@ -158,12 +159,12 @@ without knowing they exist — which is the whole reason it isn't a table of its
 Tables and the HNSW cosine index are created on first use by `ensureSchema()` in
 `src/db/index.ts`, so there is no migration tool to run.
 
-**Grouping happens twice over.** On arrival, the webhook stores each face and finds its nearest
-neighbour in pgvector (`embedding <=> $1`), ignoring faces from the same photo or video: above 0.45
-similarity it joins that person, while a weak face needs 0.5 and never starts a new person, so
-people appear seconds after an upload. On demand, **Regroup everything** re-clusters the library
-with average linkage the way the batch pipeline does, which repairs groups that drifted apart. It
-renumbers people, so person URLs change after a regroup.
+**Grouping happens twice over.** On arrival, the webhook stores each face and asks pgvector
+(`embedding <=> $1`) which people are nearest, ignoring anything from the same photo or video, and
+joins the best one — see [Grouping rules](#grouping-rules-and-tuning) for when — so people appear
+seconds after an upload. On demand, **Regroup everything** re-clusters the library with average
+linkage the way the batch pipeline does, which repairs groups that drifted apart. It renumbers
+people, so person URLs change after a regroup.
 
 **Webhook safety:** every delivery is checked against the HMAC signature (401 otherwise), and the
 handler is idempotent — it replaces a photo's faces instead of appending, because the pipeline
@@ -299,30 +300,90 @@ it is weak), but to *start* a new person it must be strong and roughly facing th
 (`CREATE_MAX_YAW`, default 0.35). Without that asymmetry a single profile shot of a man already in
 the library becomes a second person, which is exactly what happened before the rule existed.
 
-**Merging is remembered.** The merge form on a person's page moves the faces across and records a
-link between the two best faces. Regrouping honours those links, so a merge is never undone by the
-next clustering pass. That is the fix for faces the model genuinely cannot match: a profile shot,
-or someone photographed as a child.
+**A face may also join whoever it is clearly closest to.** Being close enough is an absolute test,
+and absolute tests fail on hard faces. A blurred appearance out of a video scored 0.40 against the
+man's own photographs — under the bar — while the nearest *other* person scored 0.10. Nobody
+looking at those two numbers would call it undecided. So a face also joins the best candidate when
+it clears `MATCH_FLOOR` (0.35) and beats the runner-up by `MATCH_MARGIN` (0.20). The rule needs
+somebody to be second, so it never fires in a library with one person in it, where "closer than
+anyone else" means nothing.
 
-Thresholds live in `frontend/src/lib/config.ts` (`SAME_FACE`, `ATTACH_FACE`, `CREATE_MAX_YAW`) and
-`pipeline/config.py` (quality bars, `CLUSTER_DISTANCE`, `MIN_PHOTOS_PER_PERSON`). Raise
-`CLUSTER_DISTANCE` if one person is split across groups; lower it if different people are mixed.
+This is what finds one person across photos *and* video. It also reunited a childhood
+black-and-white photograph with the man it belongs to, at 0.38, which twelve years of ageing had
+put far below any absolute threshold.
+
+**A person is scored by their closest face, not their average one.** Averaging someone's face
+across years, lighting and half-turns blurs the very detail a hard face has to match: over the
+test library the closest face beat the average on three appearances out of five. Both the arrival
+matcher and the regrouping pass use it, so **Regroup everything** no longer changes answers that
+were already made.
+
+**Video is judged by video's numbers.** A face in a 720p frame is 34-49px with a blur score of
+7-45, where the same people in photos are 102-874px and 198-6929 — the blur score is partly a
+measure of resolution, since a 40px face stretched to a 112px crop has no fine detail to find.
+Judging a video by the photo numbers threw away two whole appearances that were detected at
+0.53-0.65 and would have matched their person at 0.73. Video has `VIDEO_MIN_FACE_SIZE` (24),
+`VIDEO_STRONG_FACE_SIZE` (40) and `VIDEO_MIN_BLUR_SCORE` (6) instead, and the junk this lets in is
+caught by having to survive more than one sampled frame.
+
+**Two people bridged by one face are one person.** When a new face matches two different people
+well enough to join either, they were the same person all along and are merged — unless they share
+a photo, which is proof they are not. That is the repair for a person built from photographs and
+the same person found in a video, when whichever arrived first was too different to match.
+
+**You can say yes, and you can say no.** The suggestions on a person's page — *Might also be this
+person* — are the ones the matcher was not sure enough about to act on, and **Same person** settles
+one in a click. **not them** on any picture takes it back out into a person of its own. Both are
+remembered: a merge as a `same` link and a split as a `different` link, and regrouping honours
+both, so neither decision is undone by the next clustering pass. An appearance in a video moves as
+a whole, because its frames are one person walking across one clip.
+
+Thresholds live in `frontend/src/lib/config.ts` (`SAME_FACE`, `ATTACH_FACE`, `CREATE_MAX_YAW`,
+`MATCH_FLOOR`, `MATCH_MARGIN`, `SUGGEST_FROM`) and `pipeline/config.py` (quality bars, video bars,
+`CLUSTER_DISTANCE`, `MIN_PHOTOS_PER_PERSON`). Raise `CLUSTER_DISTANCE` if one person is split
+across groups; lower it if different people are mixed.
+
+### Measured
+
+Eight photos holding thirteen faces of three people — plus one black-and-white childhood photo —
+with the people labelled by eye off a contact sheet rather than by the embeddings being tested,
+and a 33-second 720p video of three of them shot the way a phone shoots: faces 34-49px, motion
+blurred, turned away, underlit, blown out, through a 700kbit encoder. Five appearances, known by
+construction: A B C B A.
+
+|                                       | before | after |
+|---|---|---|
+| appearances found (of 5)              | 3 | **5** |
+| appearances put with the right person  | 2 | **4** |
+| appearances put with a *wrong* person  | 0 | 0 |
+| people invented by the video           | 0 | 0 |
+| people from the 8 photos               | 4 | **3** |
+
+The appearance still unmatched is the woman at 37px under 11px of motion blur: 0.19 against
+herself, 0.09 against the nearest other person. The embedding is genuinely destroyed, the margin
+is too thin to act on, and the app leaves it unassigned rather than guess — it shows up under
+*Might also be this person* instead.
+
+Separation on this library, which is what the numbers above are chosen against: two faces of the
+same person score 0.54 to 0.97, two faces of different people never pass 0.17.
 
 ### Measured, and deliberately not changed
 
 - **Detector threshold stays at 0.5.** Across twelve photos every candidate below it was hair, a
-  shoulder or blur; the weakest real face scored 0.61. Lowering it buys junk.
-- **More tiles than 2×2 hurt.** 3×3 and 4×4 add false boxes (a rug scored 0.36) without finding
+  shoulder or blur; the weakest real face scored 0.61. Lowering it buys junk. The exception is
+  video, where a false detection has to survive half a second, which it rarely does.
+- **More tiles than 2x2 hurt.** 3x3 and 4x4 add false boxes (a rug scored 0.36) without finding
   anyone new.
 - **No geometric or magnitude filter.** False boxes have believable landmark geometry (eyes 0.42 of
   the width apart, nose inside, mouth below) and ArcFace vector lengths inside the real range
   (20.0 versus a real minimum of 20.4). Neither separates.
 - **Glint360K R100 is not better here.** It raises same-person scores (+0.74 vs +0.70 mean) but
   raises different-people scores more (+0.45 vs +0.37), so the gap that decides grouping narrows,
-  at 19× the CPU of the int8 R50.
-- **Verifying weak detections against known people** works as a safety gate, not as extra recall:
-  junk matches known people at most 0.12 while real faces reach 0.92, but in this library there
-  were no real faces below the threshold to rescue.
+  at 19x the CPU of the int8 R50.
+- **Person centroids are not better than closest faces**, for matching or for regrouping: the
+  centroid won on one appearance out of five and lost on three.
+- **Averaging a track's kept faces is worth keeping but small**: +0.02 to +0.05 towards the right
+  person, never towards a wrong one. Averaging every frame rather than the kept few was no better.
 
 ## Notes
 

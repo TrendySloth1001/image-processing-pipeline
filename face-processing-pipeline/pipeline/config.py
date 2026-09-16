@@ -72,6 +72,16 @@ STRONG_FACE_SIZE = 80    # px; a face must be at least this big to help build gr
 MIN_BLUR_SCORE = 50.0    # sharpness of the aligned crop; below this it's too blurry to build groups
 MAX_YAW_RATIO = 0.5      # how far the head may be turned (0 = looking straight at the camera)
 
+# A face in a video frame is nothing like a face in a 12-megapixel photo. Measured over a 720p
+# clip: someone a few metres from the camera is 34-49px with a blur score of 7-45, where the same
+# people in photos are 102-874px and 198-6929. The blur score is partly a measure of resolution —
+# a 40px face stretched to the 112px crop simply has no fine detail to find — so judging a video
+# by the photo numbers threw away every face in it, including ones that went on to match their
+# person at 0.69-0.77. Video gets its own floors.
+VIDEO_MIN_FACE_SIZE = int(os.environ.get("VIDEO_MIN_FACE_SIZE", "24"))
+VIDEO_STRONG_FACE_SIZE = int(os.environ.get("VIDEO_STRONG_FACE_SIZE", "40"))
+VIDEO_MIN_BLUR_SCORE = float(os.environ.get("VIDEO_MIN_BLUR_SCORE", "6"))
+
 # --- Clustering (cosine distance = 1 - similarity; 0 = identical, 1 = unrelated) ---
 CLUSTER_DISTANCE = 0.55  # strong faces closer than this (on average) become one person
 ATTACH_DISTANCE = 0.50   # a weak face joins a person only if it is this close to their average face

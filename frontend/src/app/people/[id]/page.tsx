@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { FaceCrop } from "@/components/FaceCrop";
 import { clock } from "@/components/MediaTile";
 import { ensureSchema, sql } from "@/db";
+import { config } from "@/lib/config";
 import { photoUrl, videoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +28,13 @@ type Row = {
   still_height: number | null;
 };
 
+type Suggestion = {
+  id: number;
+  similarity: number;
+  photos: number;
+  cover: Row | null;
+};
+
 export default async function PersonPage({
   params,
   searchParams,
@@ -36,6 +44,7 @@ export default async function PersonPage({
 }) {
   await ensureSchema();
   const { id } = await params;
+  const person = Number(id);
   const { notice } = await searchParams;
 
   const rows = await sql<Row[]>`
@@ -43,14 +52,46 @@ export default async function PersonPage({
            f.track_first_ms, f.track_last_ms, f.still_key, f.still_width, f.still_height,
            p.key, p.name, p.kind, p.width, p.height
       FROM faces f JOIN photos p ON p.id = f.photo_id
-     WHERE f.person_id = ${Number(id)}
+     WHERE f.person_id = ${person}
      ORDER BY f.quality DESC`;
   if (rows.length === 0) notFound();
+
+  /**
+   * Who else in the library looks like this person — the same question the matcher asks, put to
+   * you instead of decided. It offers the ones it was not sure enough about to act on: a face
+   * too turned, too small or too long ago for the model to be certain, which you can settle in
+   * one click. People sharing a photo with this one are left out, and so are people you have
+   * already said are different.
+   */
+  const suggestions = await sql<Suggestion[]>`
+    WITH mine AS (SELECT id, embedding, photo_id, track FROM faces WHERE person_id = ${person}),
+         scored AS (
+           SELECT o.person_id AS id, MAX(1 - (m.embedding <=> o.embedding)) AS similarity
+             FROM mine m JOIN faces o ON o.person_id IS NOT NULL AND o.person_id <> ${person}
+            GROUP BY o.person_id)
+    SELECT s.id, s.similarity,
+           (SELECT COUNT(DISTINCT photo_id)::int FROM faces WHERE person_id = s.id) AS photos,
+           (SELECT json_build_object('face_id', b.id, 'photo_id', b.photo_id, 'key', ph.key,
+                                     'bbox', b.bbox, 'width', ph.width, 'height', ph.height,
+                                     'still_key', b.still_key, 'still_width', b.still_width,
+                                     'still_height', b.still_height)
+              FROM faces b JOIN photos ph ON ph.id = b.photo_id
+             WHERE b.person_id = s.id ORDER BY b.quality DESC LIMIT 1) AS cover
+      FROM scored s
+     WHERE s.similarity >= ${config.suggestFrom}
+       AND NOT EXISTS (SELECT 1 FROM mine m JOIN faces o ON o.person_id = s.id
+                        WHERE o.photo_id = m.photo_id AND COALESCE(o.track, -1) = COALESCE(m.track, -1))
+       AND NOT EXISTS (SELECT 1 FROM links l
+                         JOIN faces a ON a.id = l.face_a JOIN faces b ON b.id = l.face_b
+                        WHERE l.kind = 'different'
+                          AND ((a.person_id = ${person} AND b.person_id = s.id)
+                            OR (a.person_id = s.id AND b.person_id = ${person})))
+     ORDER BY s.similarity DESC LIMIT 4`;
 
   const others = await sql<{ id: number; photos: number }[]>`
     SELECT p.id, COUNT(DISTINCT f.photo_id)::int AS photos
       FROM people p JOIN faces f ON f.person_id = p.id
-     WHERE p.id <> ${Number(id)}
+     WHERE p.id <> ${person}
      GROUP BY p.id ORDER BY photos DESC, p.id`;
 
   const cover = rows[0];
@@ -87,6 +128,38 @@ export default async function PersonPage({
         </div>
       </div>
 
+      {suggestions.length > 0 && (
+        <section className="rounded-2xl border border-amber-300/60 bg-amber-50 p-5 dark:border-amber-900/60 dark:bg-amber-950/40">
+          <h2 className="mb-1 font-medium">Might also be this person</h2>
+          <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">
+            These look like Person {id} but not enough for the app to decide on its own — usually a face
+            that is turned away, small in a video frame, or years older. You decide, and regrouping
+            remembers it.
+          </p>
+          <div className="flex flex-wrap gap-5">
+            {suggestions.map((suggestion) => (
+              <div key={suggestion.id} className="w-32 text-center">
+                <Link href={`/people/${suggestion.id}`}>
+                  {suggestion.cover && <FaceCrop face={suggestion.cover} className="mx-auto rounded-full shadow" />}
+                </Link>
+                <div className="mt-2 text-sm font-medium">Person {suggestion.id}</div>
+                <div className="text-xs text-neutral-500">
+                  {suggestion.photos} picture{suggestion.photos === 1 ? "" : "s"} ·{" "}
+                  {Number(suggestion.similarity).toFixed(2)} alike
+                </div>
+                <form action="/api/merge" method="post" className="mt-2">
+                  <input type="hidden" name="from" value={suggestion.id} />
+                  <input type="hidden" name="into" value={id} />
+                  <button type="submit" className="rounded-full bg-blue-600 px-3 py-1.5 text-xs text-white">
+                    Same person
+                  </button>
+                </form>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Each tile pairs the picture with the face that put it in this group. A video tile is the
           still from the appearance, and opens the video at the moment that appearance begins. */}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-1">
@@ -94,33 +167,47 @@ export default async function PersonPage({
           const isVideo = tile.kind === "video";
           const start = tile.track_first_ms ?? 0;
           return (
-            <a
-              key={`${tile.photo_id}:${tile.track ?? ""}`}
-              href={
-                isVideo
-                  ? `${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`
-                  : photoUrl(tile.photo_id, tile.key)
-              }
-              target="_blank"
-              rel="noreferrer"
-              className="relative block"
-            >
-              <img
-                src={photoUrl(tile.photo_id, tile.key)}
-                alt={tile.name}
-                className="aspect-square w-full rounded object-cover"
-              />
+            <div key={`${tile.photo_id}:${tile.track ?? ""}`} className="group relative">
+              <a
+                href={
+                  isVideo
+                    ? `${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`
+                    : photoUrl(tile.photo_id, tile.key)
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="block"
+              >
+                <img
+                  src={photoUrl(tile.photo_id, tile.key)}
+                  alt={tile.name}
+                  className="aspect-square w-full rounded object-cover"
+                />
+              </a>
               {isVideo && (
-                <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 text-[11px] text-white">
+                <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1.5 text-[11px] text-white">
                   ▶ {clock(start)}–{clock(tile.track_last_ms ?? start)}
                 </span>
               )}
               <FaceCrop
                 face={tile}
                 size={44}
-                className="absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
+                className="pointer-events-none absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
               />
-            </a>
+              {tiles.length > 1 && (
+                <form action="/api/split" method="post" className="absolute right-1 top-1">
+                  <input type="hidden" name="from" value={id} />
+                  <input type="hidden" name="face" value={tile.face_id} />
+                  <button
+                    type="submit"
+                    title={`Take this out of Person ${id}`}
+                    className="rounded bg-black/60 px-1.5 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                  >
+                    not them
+                  </button>
+                </form>
+              )}
+            </div>
           );
         })}
       </div>
@@ -138,9 +225,9 @@ export default async function PersonPage({
             <label className="text-sm">
               Person {id} is really{" "}
               <select name="into" className="rounded-lg border border-black/15 px-2 py-1.5 text-sm dark:border-white/20 dark:bg-neutral-800">
-                {others.map((person) => (
-                  <option key={person.id} value={person.id}>
-                    Person {person.id} ({person.photos} photo{person.photos === 1 ? "" : "s"})
+                {others.map((other) => (
+                  <option key={other.id} value={other.id}>
+                    Person {other.id} ({other.photos} picture{other.photos === 1 ? "" : "s"})
                   </option>
                 ))}
               </select>

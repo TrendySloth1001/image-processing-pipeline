@@ -58,14 +58,16 @@ const DDL = [
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS still_key text`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS still_width integer`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS still_height integer`,
-  // "These two faces are the same person", recorded when you merge two people by hand.
-  // Regrouping honours these, so a merge is not undone by the next clustering pass.
+  // What you have told the app about two faces: 'same' when you merged two people, 'different'
+  // when you took a face out of a group. Regrouping honours both, so neither decision is undone
+  // by the next clustering pass.
   `CREATE TABLE IF NOT EXISTS links (
      id serial PRIMARY KEY,
      face_a integer NOT NULL REFERENCES faces (id) ON DELETE CASCADE,
      face_b integer NOT NULL REFERENCES faces (id) ON DELETE CASCADE,
      created_at timestamp NOT NULL DEFAULT now()
    )`,
+  `ALTER TABLE links ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'same'`,
   `CREATE INDEX IF NOT EXISTS faces_person_idx ON faces (person_id)`,
   `CREATE INDEX IF NOT EXISTS faces_track_idx ON faces (photo_id, track)`,
   `CREATE INDEX IF NOT EXISTS faces_embedding_idx ON faces USING hnsw (embedding vector_cosine_ops)`,
