@@ -31,6 +31,24 @@ export async function getObjectStream(key: string) {
   };
 }
 
+/**
+ * Part of an object, for a browser that is seeking inside a video.
+ *
+ * The Range header is passed straight through to storage, which answers with just those bytes,
+ * so scrubbing a long video never pulls the whole file through this process.
+ */
+export async function getObjectRange(key: string, range?: string | null) {
+  const object = await s3.send(
+    new GetObjectCommand({ Bucket: config.s3.bucket, Key: key, Range: range ?? undefined }),
+  );
+  return {
+    body: object.Body!.transformToWebStream(),
+    contentType: object.ContentType ?? "application/octet-stream",
+    contentLength: object.ContentLength ?? null,
+    contentRange: object.ContentRange ?? null,
+  };
+}
+
 /** Every key under a prefix, following pagination. */
 export async function listKeys(prefix: string): Promise<string[]> {
   const keys: string[] = [];

@@ -38,6 +38,7 @@ def publish_job(job: dict) -> str:
     job_id = job["job_id"]
     r().hset(f"job:{job_id}", mapping={
         "status": "queued",
+        "kind": job.get("kind", "image"),
         "attempts": 0,
         "created_at": time.time(),
         "job": json.dumps(job),

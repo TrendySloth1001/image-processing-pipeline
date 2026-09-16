@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { FaceCrop } from "@/components/FaceCrop";
+import { clock } from "@/components/MediaTile";
 import { ensureSchema, sql } from "@/db";
-import { photoUrl } from "@/lib/photoUrl";
+import { photoUrl, videoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +13,18 @@ type Row = {
   photo_id: number;
   key: string;
   name: string;
+  kind: string;
   bbox: number[];
   quality: number;
   is_strong: boolean;
   width: number | null;
   height: number | null;
+  track: number | null;
+  track_first_ms: number | null;
+  track_last_ms: number | null;
+  still_key: string | null;
+  still_width: number | null;
+  still_height: number | null;
 };
 
 export default async function PersonPage({
@@ -31,7 +39,9 @@ export default async function PersonPage({
   const { notice } = await searchParams;
 
   const rows = await sql<Row[]>`
-    SELECT f.id AS face_id, f.photo_id, f.bbox, f.quality, f.is_strong, p.key, p.name, p.width, p.height
+    SELECT f.id AS face_id, f.photo_id, f.bbox, f.quality, f.is_strong, f.track,
+           f.track_first_ms, f.track_last_ms, f.still_key, f.still_width, f.still_height,
+           p.key, p.name, p.kind, p.width, p.height
       FROM faces f JOIN photos p ON p.id = f.photo_id
      WHERE f.person_id = ${Number(id)}
      ORDER BY f.quality DESC`;
@@ -44,7 +54,11 @@ export default async function PersonPage({
      GROUP BY p.id ORDER BY photos DESC, p.id`;
 
   const cover = rows[0];
-  const photos = [...new Map(rows.map((row) => [row.photo_id, row])).values()];
+  // One tile per photo, and one per appearance in a video: the same person can be on screen
+  // twice in one clip, and those are two things to show, not one.
+  const tiles = [...new Map(rows.map((row) => [`${row.photo_id}:${row.track ?? ""}`, row])).values()];
+  const videos = new Set(rows.filter((row) => row.kind === "video").map((row) => row.photo_id)).size;
+  const photos = new Set(rows.filter((row) => row.kind !== "video").map((row) => row.photo_id)).size;
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
@@ -57,51 +71,58 @@ export default async function PersonPage({
       )}
 
       <div className="flex items-center gap-5">
-        <FaceCrop
-          photoId={cover.photo_id}
-          photoKey={cover.key}
-          bbox={cover.bbox}
-          width={cover.width}
-          height={cover.height}
-          size={120}
-          className="rounded-full shadow"
-        />
+        <FaceCrop face={cover} size={120} className="rounded-full shadow" />
         <div>
           <h1 className="font-serif text-3xl">Person {id}</h1>
           <p className="text-sm text-neutral-500">
-            {photos.length} photo{photos.length === 1 ? "" : "s"}, {rows.length} face
-            {rows.length === 1 ? "" : "s"}
+            {[
+              photos > 0 && `${photos} photo${photos === 1 ? "" : "s"}`,
+              videos > 0 && `${videos} video${videos === 1 ? "" : "s"}`,
+              `${rows.length} face${rows.length === 1 ? "" : "s"}`,
+            ]
+              .filter(Boolean)
+              .join(", ")}
             {rows.some((row) => !row.is_strong) && " (some weak)"}
           </p>
         </div>
       </div>
 
-      {/* Each tile pairs the photo with the face that put it in this group. */}
+      {/* Each tile pairs the picture with the face that put it in this group. A video tile is the
+          still from the appearance, and opens the video at the moment that appearance begins. */}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-1">
-        {photos.map((photo) => (
-          <a
-            key={photo.photo_id}
-            href={photoUrl(photo.photo_id, photo.key)}
-            target="_blank"
-            rel="noreferrer"
-            className="relative block"
-          >
-            <img
-              src={photoUrl(photo.photo_id, photo.key)}
-              alt={photo.name}
-              className="aspect-square w-full rounded object-cover"
-            />
-            <FaceCrop
-              photoId={photo.photo_id}
-              photoKey={photo.key}
-              bbox={photo.bbox}
-              width={photo.width}
-              height={photo.height}
-              size={44}
-              className="absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
-            />
-          </a>
-        ))}
+        {tiles.map((tile) => {
+          const isVideo = tile.kind === "video";
+          const start = tile.track_first_ms ?? 0;
+          return (
+            <a
+              key={`${tile.photo_id}:${tile.track ?? ""}`}
+              href={
+                isVideo
+                  ? `${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`
+                  : photoUrl(tile.photo_id, tile.key)
+              }
+              target="_blank"
+              rel="noreferrer"
+              className="relative block"
+            >
+              <img
+                src={photoUrl(tile.photo_id, tile.key)}
+                alt={tile.name}
+                className="aspect-square w-full rounded object-cover"
+              />
+              {isVideo && (
+                <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 text-[11px] text-white">
+                  ▶ {clock(start)}–{clock(tile.track_last_ms ?? start)}
+                </span>
+              )}
+              <FaceCrop
+                face={tile}
+                size={44}
+                className="absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
+              />
+            </a>
+          );
+        })}
       </div>
 
       {others.length > 0 && (

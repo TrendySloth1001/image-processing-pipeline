@@ -13,6 +13,7 @@ export async function POST(request: Request) {
   const rows = await sql<{ key: string }[]>`SELECT key FROM photos`;
   const keys = new Set(rows.map((row) => row.key));
   for (const key of await listKeys("uploads/")) keys.add(key); // orphans from failed uploads
+  for (const key of await listKeys("stills/")) keys.add(key); // face stills cut out of videos
   const removed = await deleteObjects([...keys]);
 
   const [counts] = await sql<{ photos: number; faces: number; people: number }[]>`

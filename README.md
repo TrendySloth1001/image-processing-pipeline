@@ -1,12 +1,13 @@
 # Face processing
 
 A stateless face-processing microservice (queue in, webhook out) and a Next.js app that uses it.
-Everything runs in Docker; nothing is installed on the Mac.
+It groups the faces in photos **and videos** into people. Everything runs in Docker; nothing is
+installed on the Mac.
 
 ```
 face-processing-pipeline/   Python service
   service/                  the microservice: producer API, worker, queue, storage, webhook delivery
-  pipeline/                  the processing core: SCRFD detection, ArcFace embeddings, grouping
+  pipeline/                  the processing core: SCRFD detection, ArcFace embeddings, tracking, grouping
   web/                       folder-based test UI, a development helper (http://localhost:8000)
   scripts/                   check_env.py, echo_webhook.py
   data/                      photos in, results out, for the folder-based UI (never committed)
@@ -34,11 +35,11 @@ docker compose up -d --scale worker=3 worker      # more consumers, same queue
 ```mermaid
 flowchart TD
     A[Your app - producer] -->|POST /v1/jobs + callback_url| B[api]
-    B -->|photo| C[(MinIO)]
+    B -->|photo or video| C[(MinIO)]
     B -->|job id| D[[Redis stream face:jobs]]
     D --> W[worker - stateless, N replicas]
     C -.fetch.-> W
-    W -->|POST signed result| E[Your webhook - consumer]
+    W -->|POST signed result: faces, or tracks| E[Your webhook - consumer]
     E -->|2xx acknowledges| W
     W -->|no ack: 0s, 5s, 30s, 2m, 10m, 30m, 1h, 2h| E
 ```
@@ -57,12 +58,19 @@ curl -X POST localhost:8080/v1/jobs -H 'content-type: application/json' -d '{
   "metadata": {"photo_id": "p_123"}
 }'
 
-# or hand over the bytes and let the API store them
+# a video: the same call with "video" instead of "image"
+curl -X POST localhost:8080/v1/jobs -H 'content-type: application/json' -d '{
+  "video": {"key": "incoming/holiday.mp4"},
+  "callback_url": "http://your-app:3000/api/webhooks/faces",
+  "metadata": {"photo_id": "p_124"}
+}'
+
+# or hand over the bytes and let the API store them; it tells photos and videos apart itself
 curl -F file=@photo.jpg -F callback_url=http://your-app:3000/api/webhooks/faces \
      -F 'metadata={"photo_id":"p_123"}' localhost:8080/v1/jobs/upload
 ```
 
-Both answer `202 {"job_id": "job_…", "status": "queued"}`.
+All answer `202 {"job_id": "job_…", "kind": "image"|"video", "status": "queued"}`.
 `GET /v1/jobs/{job_id}` reports `queued → processing → delivering → delivered`, or `dead` if the
 consumer never acknowledged, along with the attempt count and the last error.
 
@@ -82,6 +90,26 @@ The worker POSTs this to `callback_url`:
   "faces": [{"bbox": [...], "landmarks": [[x, y], ...], "det_score": 0.92,
              "quality": 0.81, "is_strong": true, "embedding": [512 numbers]}],
   "took_ms": 1600
+}
+```
+
+A video answers with **tracks** instead of faces — see [Video](#video) — and everything else about
+the contract is the same:
+
+```json
+{
+  "job_id": "job_bc27a49b892e4252a2ce",
+  "kind": "video",
+  "status": "succeeded",
+  "metadata": {"photo_id": "p_124"},
+  "video": {"width": 1280, "height": 720, "duration_ms": 22000, "sampled_frames": 44,
+            "sampled_fps": 2.0, "poster": {"key": "stills/job_…/poster.jpg", "width": 1280, "height": 720}},
+  "detected": 34,
+  "tracks": [{"track": 0, "first_ms": 0, "last_ms": 4500, "frames": 10,
+              "faces": [{"at_ms": 2000, "bbox": [...], "quality": 0.79, "is_strong": true, "yaw": 0.12,
+                         "embedding": [512 numbers],
+                         "still": {"key": "stills/job_…/t0f0.jpg", "width": 362, "height": 361}}]}],
+  "took_ms": 6343
 }
 ```
 
@@ -120,15 +148,18 @@ the pipeline never touches it.
 
 | Table | What's in it |
 |---|---|
-| `photos` | object key, file name, job id, status, width/height, error |
-| `faces` | photo id, person id, bbox, det_score, quality, is_strong, `vector(512)` embedding |
+| `photos` | object key, file name, `kind` (photo or video), job id, status, width/height, duration, poster key, error |
+| `faces` | photo id, person id, bbox, det_score, quality, is_strong, `vector(512)` embedding, and for a video face its track, time and still |
 | `people` | just an id, which faces point at |
+
+A video is a row in `photos` too. Everything that joins faces to people then works on videos
+without knowing they exist — which is the whole reason it isn't a table of its own.
 
 Tables and the HNSW cosine index are created on first use by `ensureSchema()` in
 `src/db/index.ts`, so there is no migration tool to run.
 
 **Grouping happens twice over.** On arrival, the webhook stores each face and finds its nearest
-neighbour in pgvector (`embedding <=> $1`), ignoring faces from the same photo: above 0.45
+neighbour in pgvector (`embedding <=> $1`), ignoring faces from the same photo or video: above 0.45
 similarity it joins that person, while a weak face needs 0.5 and never starts a new person, so
 people appear seconds after an upload. On demand, **Regroup everything** re-clusters the library
 with average linkage the way the batch pipeline does, which repairs groups that drifted apart. It
@@ -154,6 +185,8 @@ load image (fix rotation) → SCRFD detect → drop tiny faces → align to 112�
 | `pipeline/detect.py` | SCRFD-10GF: face boxes and 5 landmarks. |
 | `pipeline/quality.py` | Size, blur and head angle; marks a face strong or weak. |
 | `pipeline/embed.py` | Aligns each face and turns it into 512 ArcFace numbers. |
+| `pipeline/video.py` | Decodes a video and hands back a few frames a second, plus the stills. |
+| `pipeline/track.py` | Ties one face across frames into an appearance; keeps a few faces of it. |
 | `pipeline/cluster.py` | Groups strong faces, attaches weak ones, numbers people by photo count. |
 | `pipeline/db.py`, `export.py` | Used only by the folder-based test UI, not by the microservice. |
 
@@ -184,6 +217,63 @@ Three findings behind those settings:
   reduces by `min(width // asked, height // asked)`, so a square box does nothing to a 4:3 photo.
 
 Settings: `MODEL_PRECISION`, `ORT_THREADS`, `MAX_DECODE_SIDE`, `DETECT_TILES`, `TILE_MIN_PIXELS`.
+Videos have their own numbers — see [Video](#video).
+
+## Video
+
+A video's unit is not a face, it is an **appearance**: one person on screen from 0:12 to 0:41 is
+one thing to group, not eighty. So the worker samples frames, ties the faces in them into
+**tracks**, and delivers a few representative faces per track. The app then treats a track exactly
+as it treats a photo's face — match it against the people it already has — and everything
+downstream is unchanged.
+
+```
+open video from the bucket (range requests, nothing on disk)
+  -> sample 2 frames a second   -> SCRFD on each frame -> embed every face
+  -> join faces into tracks     -> keep the best few faces of each track, with a still each
+  -> one webhook: tracks, times, embeddings
+```
+
+**Four decisions, and why.**
+
+- **Sample, don't decode everything.** A face does not change meaningfully in 33 ms. At
+  `VIDEO_FPS=2` everyone who appears is still seen, at a thirtieth of the detector's work.
+  Decoding is only about 5% of the cost, so frames a second is the knob that matters.
+- **Embed every face, not just the kept ones.** Two frames a second is half a second apart, and a
+  walking person moves further than their own face in that time, so overlapping boxes are weak
+  evidence of who is who. The face itself is strong evidence, and an embedding costs a seventh of
+  a detection. Boxes are still used to rescue a face whose embedding went noisy in a blurred
+  frame but that plainly stayed put.
+- **Deliver a handful of faces per track, not one per frame.** `TRACK_FACES=3`, chosen by
+  quality and by being different enough from each other to be worth a slot, so a turned head or a
+  change of light is kept and forty near-identical frames are not.
+- **A track is one person, decided once.** `assignTrack` matches the track's best face and the
+  rest follow it, so a blurred frame of an appearance never has to clear the bar alone, and
+  regrouping keeps a track together too.
+
+**Accuracy a video gives for free.** A detection that appears in one sampled frame and never
+again is dropped (`MIN_TRACK_FRAMES`): a false box rarely survives half a second, and neither
+does a stranger crossing the background. The rule is relaxed for a clip too short to have offered
+a second look.
+
+**Speed**, measured on this Mac over a 22-second 720p clip: **6.3 s, about 3.3× real time per
+worker**, and it scales with worker count. Decoding all 660 frames was 0.3 s of that; the rest is
+detection and embeddings on 44 sampled frames. A ten-minute video is roughly three minutes on one
+worker, one minute on three.
+
+**Nothing lands on disk.** `storage.open_object` reads the bucket through range requests and
+lets the decoder seek, so a large file costs a few megabytes of traffic rather than its own size,
+in the worker and again in the browser: `/api/videos/{id}` passes `Range` straight through, which
+is also what makes seeking work.
+
+Settings: `VIDEO_FPS`, `VIDEO_MAX_SIDE` (1280, low enough that a frame takes one detector pass
+rather than five), `VIDEO_MAX_SECONDS`, `TRACK_FACES`, `MIN_TRACK_FRAMES`, and the track matching
+thresholds in `pipeline/config.py`.
+
+**Not built: progressive delivery.** A long video delivers one webhook at the end. Sending a
+webhook per segment would show people while the video is still processing, but it turns one
+idempotent delivery into a sequence the consumer has to reassemble, and the retry contract has to
+become per-segment. Worth doing when videos get long enough to wait for; not before.
 
 ## Development helpers
 

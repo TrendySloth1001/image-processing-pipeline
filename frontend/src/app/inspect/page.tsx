@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { FaceBoxes, personColour } from "@/components/FaceBoxes";
+import { clock } from "@/components/MediaTile";
 import { ensureSchema, sql } from "@/db";
+import { facePicture, photoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +12,7 @@ type Row = {
   photo_id: number;
   key: string;
   name: string;
+  kind: string;
   width: number | null;
   height: number | null;
   bbox: number[];
@@ -20,21 +23,79 @@ type Row = {
   matched_face_id: number | null;
   match_similarity: number | null;
   assigned_by: string | null;
+  track: number | null;
+  at_ms: number | null;
+  track_first_ms: number | null;
+  track_last_ms: number | null;
+  still_key: string | null;
+  still_width: number | null;
+  still_height: number | null;
 };
 
 const MATRIX_LIMIT = 30; // the similarity table gets unreadable beyond this
+
+/** The table under each picture: which face matched what, and who decided. */
+function Decisions({ faces }: { faces: Row[] }) {
+  return (
+    <table className="w-full text-left text-xs">
+      <thead className="text-neutral-500">
+        <tr>
+          <th className="py-1">face</th>
+          <th>person</th>
+          <th>size</th>
+          <th>detect</th>
+          <th>quality</th>
+          <th>matched</th>
+          <th>decided by</th>
+        </tr>
+      </thead>
+      <tbody>
+        {faces.map((face) => (
+          <tr key={face.face_id} className="border-t border-black/5 dark:border-white/10">
+            <td className="py-1">f{face.face_id}</td>
+            <td>
+              <span className="rounded px-1.5 py-0.5 text-white" style={{ background: personColour(face.person_id) }}>
+                {face.person_id ? `P${face.person_id}` : "unassigned"}
+              </span>
+            </td>
+            <td>{Math.round(face.bbox[2] - face.bbox[0])}px</td>
+            <td>{face.det_score.toFixed(2)}</td>
+            <td>
+              {face.quality.toFixed(2)}
+              {face.is_strong ? "" : " weak"}
+            </td>
+            <td>
+              {face.match_similarity === null
+                ? "—"
+                : `${face.matched_face_id ? `f${face.matched_face_id}` : "group average"} ${Number(
+                    face.match_similarity,
+                  ).toFixed(2)}`}
+            </td>
+            <td className="text-neutral-500">{face.assigned_by ?? "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 export default async function InspectPage() {
   await ensureSchema();
 
   const rows = await sql<Row[]>`
-    SELECT f.id AS face_id, f.photo_id, p.key, p.name, p.width, p.height, f.bbox, f.det_score,
-           f.quality, f.is_strong, f.person_id, f.matched_face_id, f.match_similarity, f.assigned_by
+    SELECT f.id AS face_id, f.photo_id, p.key, p.name, p.kind, p.width, p.height, f.bbox, f.det_score,
+           f.quality, f.is_strong, f.person_id, f.matched_face_id, f.match_similarity, f.assigned_by,
+           f.track, f.at_ms, f.track_first_ms, f.track_last_ms, f.still_key, f.still_width, f.still_height
       FROM faces f JOIN photos p ON p.id = f.photo_id
-     ORDER BY f.photo_id DESC, f.id`;
+     ORDER BY f.photo_id DESC, f.track NULLS FIRST, f.id`;
 
-  const byPhoto = new Map<number, Row[]>();
-  for (const row of rows) byPhoto.set(row.photo_id, [...(byPhoto.get(row.photo_id) ?? []), row]);
+  // Photos are shown whole, with every face boxed on them. A video has no single picture to box
+  // faces on, so it is shown appearance by appearance, each as the stills the pipeline kept.
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const key = row.kind === "video" ? `${row.photo_id}:${row.track ?? ""}` : `${row.photo_id}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
 
   // Only the faces the matrix shows, so a big library doesn't turn into a huge query.
   const ids = [...rows]
@@ -55,75 +116,66 @@ export default async function InspectPage() {
       <Link href="/" className="text-sm text-blue-600">← All people</Link>
       <h1 className="font-serif text-3xl">Face mappings</h1>
       <p className="max-w-3xl text-sm text-neutral-500">
-        Every face the pipeline found, boxed on its photo. The colour and <b>P8</b> label are the person it
+        Every face the pipeline found, boxed on its picture. The colour and <b>P8</b> label are the person it
         was put with, <b>f12</b> is the face id, <b>q</b> is its quality score, and a dashed box means a weak
         face: too small, blurry or turned to start a group, so it could only join one. The table under each
-        photo shows which face it was compared against and how close they were, on a scale where 1 is identical.
+        picture shows which face it was compared against and how close they were, on a scale where 1 is
+        identical. A video is listed one appearance at a time — the few frames kept out of it — because
+        every face of an appearance is grouped as one.
       </p>
 
-      {[...byPhoto.entries()].map(([photoId, faces]) => (
-        <section
-          key={photoId}
-          className="grid gap-5 rounded-2xl border border-black/10 bg-white p-5 md:grid-cols-[minmax(0,420px)_1fr] dark:border-white/15 dark:bg-neutral-900"
-        >
-          <FaceBoxes
-            photoId={photoId}
-            photoKey={faces[0].key}
-            width={faces[0].width}
-            height={faces[0].height}
-            faces={faces}
-          />
-          <div className="min-w-0">
-            <h2 className="mb-1 truncate font-medium">{faces[0].name}</h2>
-            <p className="mb-3 text-xs text-neutral-500">
-              photo {photoId} · {faces[0].width}×{faces[0].height} · {faces.length} face
-              {faces.length === 1 ? "" : "s"}
-            </p>
-            <table className="w-full text-left text-xs">
-              <thead className="text-neutral-500">
-                <tr>
-                  <th className="py-1">face</th>
-                  <th>person</th>
-                  <th>size</th>
-                  <th>detect</th>
-                  <th>quality</th>
-                  <th>matched</th>
-                  <th>decided by</th>
-                </tr>
-              </thead>
-              <tbody>
+      {[...groups.values()].map((faces) => {
+        const first = faces[0];
+        if (first.kind === "video") {
+          return (
+            <section
+              key={`${first.photo_id}:${first.track}`}
+              className="rounded-2xl border border-black/10 bg-white p-5 dark:border-white/15 dark:bg-neutral-900"
+            >
+              <h2 className="mb-1 truncate font-medium">{first.name}</h2>
+              <p className="mb-3 text-xs text-neutral-500">
+                video {first.photo_id} · appearance {first.track} · {clock(first.track_first_ms ?? 0)}–
+                {clock(first.track_last_ms ?? 0)} · {faces.length} face{faces.length === 1 ? "" : "s"} kept
+              </p>
+              <div className="mb-4 flex flex-wrap gap-3">
                 {faces.map((face) => (
-                  <tr key={face.face_id} className="border-t border-black/5 dark:border-white/10">
-                    <td className="py-1">f{face.face_id}</td>
-                    <td>
-                      <span
-                        className="rounded px-1.5 py-0.5 text-white"
-                        style={{ background: personColour(face.person_id) }}
-                      >
-                        {face.person_id ? `P${face.person_id}` : "unassigned"}
-                      </span>
-                    </td>
-                    <td>{Math.round(face.bbox[2] - face.bbox[0])}px</td>
-                    <td>{face.det_score.toFixed(2)}</td>
-                    <td>
-                      {face.quality.toFixed(2)}
-                      {face.is_strong ? "" : " weak"}
-                    </td>
-                    <td>
-                      {face.match_similarity === null
-                        ? "—"
-                        : `${face.matched_face_id ? `f${face.matched_face_id}` : "group average"} ${Number(
-                            face.match_similarity,
-                          ).toFixed(2)}`}
-                    </td>
-                    <td className="text-neutral-500">{face.assigned_by ?? "—"}</td>
-                  </tr>
+                  <div key={face.face_id} className="w-40">
+                    <FaceBoxes
+                      src={facePicture(face).src}
+                      width={face.still_width}
+                      height={face.still_height}
+                      faces={[face]}
+                    />
+                    <p className="mt-1 text-center text-[11px] text-neutral-500">at {clock(face.at_ms ?? 0)}</p>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ))}
+              </div>
+              <Decisions faces={faces} />
+            </section>
+          );
+        }
+        return (
+          <section
+            key={first.photo_id}
+            className="grid gap-5 rounded-2xl border border-black/10 bg-white p-5 md:grid-cols-[minmax(0,420px)_1fr] dark:border-white/15 dark:bg-neutral-900"
+          >
+            <FaceBoxes
+              src={photoUrl(first.photo_id, first.key)}
+              width={first.width}
+              height={first.height}
+              faces={faces}
+            />
+            <div className="min-w-0">
+              <h2 className="mb-1 truncate font-medium">{first.name}</h2>
+              <p className="mb-3 text-xs text-neutral-500">
+                photo {first.photo_id} · {first.width}×{first.height} · {faces.length} face
+                {faces.length === 1 ? "" : "s"}
+              </p>
+              <Decisions faces={faces} />
+            </div>
+          </section>
+        );
+      })}
 
       {ids.length > 1 && (
         <section className="overflow-x-auto rounded-2xl border border-black/10 bg-white p-5 dark:border-white/15 dark:bg-neutral-900">

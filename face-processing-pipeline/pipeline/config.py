@@ -42,6 +42,30 @@ TILE_OVERLAP = 0.25  # fraction of a tile shared with its neighbour, so faces on
 TILE_MIN_PIXELS = float(os.environ.get("TILE_MIN_PIXELS", "2e6"))
 NMS_IOU = 0.4        # two boxes overlapping more than this are the same face
 
+# --- Video ---
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+# Frames a second handed to the detector. A face does not change meaningfully in 33ms, so 30fps
+# is thirty times the work of 2fps for the same people. Raise it only if people flash past.
+VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "2"))
+# Frames are decoded no larger than this. Lower than a photo's 2048 on purpose: faces fill more
+# of a video frame, and staying under TILE_MIN_PIXELS keeps detection to one pass per frame.
+VIDEO_MAX_SIDE = int(os.environ.get("VIDEO_MAX_SIDE", "1280"))
+VIDEO_MAX_SECONDS = float(os.environ.get("VIDEO_MAX_SECONDS", "0"))  # 0 = the whole video
+VIDEO_READ_CHUNK = int(os.environ.get("VIDEO_READ_CHUNK", str(4 * 1024 * 1024)))  # bytes per range request
+
+# --- Tracking (one person's continuous appearance in a video) ---
+TRACK_FACES = int(os.environ.get("TRACK_FACES", "3"))  # representative faces delivered per track
+TRACK_SAME_FACE = 0.5      # embedding agreement that alone says "same appearance"
+TRACK_NEAR_FACE = 0.3      # weaker agreement, accepted only when the box barely moved
+TRACK_IOU = 0.3            # how much the box must overlap for that rescue to apply
+TRACK_MAX_GAP_MS = 2000    # away longer than this and the next sighting is a new appearance
+TRACK_REDUNDANT = 0.92     # a face this close to one already kept adds nothing new
+MIN_TRACK_FRAMES = 2       # seen in one frame only: a flicker, not a person
+STILL_MAX_SIDE = 512       # the JPEG kept for each representative face
+STILL_PADDING = 2.5        # how much of the surroundings it keeps, as a multiple of the face
+STILL_QUALITY = 82
+POSTER_MAX_SIDE = 1280     # the video's own thumbnail, cut from its first sampled frame
+
 # --- Quality ---
 MIN_FACE_SIZE = 40       # px, shorter side of the face box; smaller faces are ignored entirely
 STRONG_FACE_SIZE = 80    # px; a face must be at least this big to help build groups

@@ -12,16 +12,31 @@ import time
 
 import httpx
 
+from pipeline.config import VIDEO_READ_CHUNK
+from pipeline.video import read_all
 from service import delivery, queue, settings, storage
 from service.processor import models, process
+from service.video_processor import process_video
 
 
-def fetch(image: dict) -> bytes:
-    if image.get("key"):
-        return storage.get_bytes(image["key"])
-    response = httpx.get(image["url"], timeout=30, follow_redirects=True)
+def fetch(media: dict) -> bytes:
+    if media.get("key"):
+        return storage.get_bytes(media["key"])
+    response = httpx.get(media["url"], timeout=30, follow_redirects=True)
     response.raise_for_status()
     return response.content
+
+
+def open_video_source(media: dict):
+    """A video is opened rather than loaded: the decoder reads the header, jumps to the index and
+    walks forward, so a file in the bucket costs a few range requests instead of its whole size.
+    A video behind a plain URL has to be pulled into memory, because the decoder must be able to
+    seek and an HTTP response cannot."""
+    if media.get("key"):
+        return storage.open_object(media["key"], VIDEO_READ_CHUNK)
+    response = httpx.get(media["url"], timeout=120, follow_redirects=True)
+    response.raise_for_status()
+    return read_all(response.content)
 
 
 def handle(job_id: str, log=print) -> None:
@@ -35,19 +50,34 @@ def handle(job_id: str, log=print) -> None:
         return
 
     job = json.loads(state["job"])
+    kind = job.get("kind", "image")
+    media = job.get("media") or job.get("image")  # "image" is what the first version sent
     queue.set_state(job_id, status="processing")
     started = time.time()
     try:
-        result = {"status": "succeeded", **process(fetch(job["image"]))}
-        log(f"job {job_id}: {len(result['faces'])} face(s) of {result['detected']} detected "
-            f"in {result['took_ms']}ms")
+        if kind == "video":
+            # Stills go next to the job in the bucket, so the consumer can show a face from a
+            # video without holding the video itself, and so a reset can delete them by prefix.
+            def store(name: str, jpeg: bytes) -> str:
+                return storage.put_bytes(f"stills/{job_id}/{name}.jpg", jpeg, "image/jpeg")
+
+            result = {"status": "succeeded", **process_video(open_video_source(media), store,
+                                                             log=lambda line: log(f"job {job_id}: {line}"))}
+            faces = sum(len(track["faces"]) for track in result["tracks"])
+            log(f"job {job_id}: {len(result['tracks'])} track(s) and {faces} face(s) from "
+                f"{result['video']['sampled_frames']} sampled frames "
+                f"({result['detected']} detections) in {result['took_ms']}ms")
+        else:
+            result = {"status": "succeeded", **process(fetch(media))}
+            log(f"job {job_id}: {len(result['faces'])} face(s) of {result['detected']} detected "
+                f"in {result['took_ms']}ms")
     except Exception as e:
-        result = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+        result = {"status": "failed", "kind": kind, "error": f"{type(e).__name__}: {e}"}
         log(f"job {job_id}: failed after {int((time.time() - started) * 1000)}ms ({result['error']})")
 
-    result = {"job_id": job_id, "metadata": job.get("metadata", {}), **result}
+    result = {"job_id": job_id, "kind": kind, "metadata": job.get("metadata", {}), **result}
     delivery.store_result(job_id, result)
-    queue.set_state(job_id, faces=len(result.get("faces", [])))
+    queue.set_state(job_id, faces=len(result.get("faces", [])), tracks=len(result.get("tracks", [])))
     delivery.schedule(job_id, attempt=0)  # first attempt is immediate
 
 

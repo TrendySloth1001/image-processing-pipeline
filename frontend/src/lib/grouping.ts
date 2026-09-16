@@ -8,10 +8,23 @@ export const toVector = (embedding: number[]) => `[${embedding.join(",")}]`;
 type FaceRow = {
   id: number;
   photo_id: number;
+  track: number | null;
+  quality: number;
   is_strong: boolean;
   yaw: number | null;
   embedding: string;
 };
+
+/**
+ * What two faces have to come from before they are forbidden to be the same person.
+ *
+ * Two faces in one photo are almost never one person, and the same holds for two faces in one
+ * frame of a video — which is what two tracks of one video mean. Faces inside a single track are
+ * the same person by construction, so the track has to be part of the key: without it every face
+ * of a video would be forbidden from joining the rest of its own appearance.
+ */
+const sourceOf = (face: { photo_id: number; track: number | null }) =>
+  `${face.photo_id}:${face.track ?? ""}`;
 
 /**
  * Joining a person is easy, starting one is not. A face that is small, blurry or turned away can
@@ -20,6 +33,17 @@ type FaceRow = {
  */
 export function canStartPerson(isStrong: boolean, yaw: number | null): boolean {
   return isStrong && Number(yaw ?? 1) <= config.createMaxYaw;
+}
+
+/** The closest already-grouped face, ignoring everything from the same photo or video. */
+async function nearestGrouped(vector: string, photoId: number, faceId: number) {
+  const [nearest] = await sql<{ id: number; person_id: number; similarity: number }[]>`
+    SELECT id, person_id, 1 - (embedding <=> ${vector}::vector) AS similarity
+      FROM faces
+     WHERE person_id IS NOT NULL AND photo_id <> ${photoId} AND id <> ${faceId}
+     ORDER BY embedding <=> ${vector}::vector
+     LIMIT 1`;
+  return nearest ?? null;
 }
 
 /**
@@ -38,12 +62,7 @@ export async function assignPerson(
   yaw: number | null,
 ): Promise<number | null> {
   const vector = toVector(embedding);
-  const [nearest] = await sql<{ id: number; person_id: number; similarity: number }[]>`
-    SELECT id, person_id, 1 - (embedding <=> ${vector}::vector) AS similarity
-      FROM faces
-     WHERE person_id IS NOT NULL AND photo_id <> ${photoId} AND id <> ${faceId}
-     ORDER BY embedding <=> ${vector}::vector
-     LIMIT 1`;
+  const nearest = await nearestGrouped(vector, photoId, faceId);
 
   const similarity = nearest ? Number(nearest.similarity) : null;
   const threshold = isStrong ? config.sameFace : config.attachFace;
@@ -73,6 +92,46 @@ export async function assignPerson(
 }
 
 /**
+ * Give a whole track one person at once.
+ *
+ * A track is one person's continuous appearance in a video, so its faces cannot belong to
+ * different people — deciding for each of them separately would only invent ways to disagree.
+ * The track's best face does the matching and the rest follow it, which also means a turned or
+ * blurred face inside the track never has to clear the bar on its own.
+ */
+export async function assignTrack(
+  photoId: number,
+  faces: { id: number; embedding: number[]; isStrong: boolean; yaw: number | null }[],
+): Promise<number | null> {
+  if (faces.length === 0) return null;
+  const [best, ...rest] = faces; // the pipeline delivers a track's faces best first
+  const vector = toVector(best.embedding);
+  const nearest = await nearestGrouped(vector, photoId, best.id);
+  const similarity = nearest ? Number(nearest.similarity) : null;
+  const threshold = best.isStrong ? config.sameFace : config.attachFace;
+  const ids = [best.id, ...rest.map((face) => face.id)];
+
+  let personId: number | null = null;
+  let assignedBy: string;
+  if (nearest && similarity !== null && similarity >= threshold) {
+    personId = nearest.person_id;
+    assignedBy = "track joined a person";
+  } else if (canStartPerson(best.isStrong, best.yaw)) {
+    const [person] = await sql<{ id: number }[]>`INSERT INTO people DEFAULT VALUES RETURNING id`;
+    personId = person.id;
+    assignedBy = "track started a person";
+  } else {
+    assignedBy = best.isStrong ? "too turned to start a person" : "too far";
+  }
+
+  await sql`
+    UPDATE faces SET person_id = ${personId}, matched_face_id = ${nearest?.id ?? null},
+                     match_similarity = ${similarity}, assigned_by = ${assignedBy}
+     WHERE id IN ${sql(ids)}`;
+  return personId;
+}
+
+/**
  * Group the whole library again from scratch: average-linkage clustering over the strong faces,
  * then weak faces join whichever group they are closest to. Slower than assigning on arrival, but
  * it repairs groups that drifted apart. Merges you made by hand are applied first, and a group
@@ -80,7 +139,8 @@ export async function assignPerson(
  */
 export async function regroupLibrary() {
   const rows = await sql<FaceRow[]>`
-    SELECT id, photo_id, is_strong, yaw, embedding::text AS embedding FROM faces ORDER BY id`;
+    SELECT id, photo_id, track, quality, is_strong, yaw, embedding::text AS embedding
+      FROM faces ORDER BY id`;
   if (rows.length === 0) return { people: 0, faces: 0, unassigned: 0 };
   const links = await sql<{ face_a: number; face_b: number }[]>`SELECT face_a, face_b FROM links`;
 
@@ -89,7 +149,11 @@ export async function regroupLibrary() {
   const similarity = (a: number[], b: number[]) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 
   // Start with one cluster per strong face, then merge the closest pair while it is close enough.
-  const clusters = strong.map((face) => ({ faces: [face.id], photos: new Set([face.photo_id]) }));
+  const clusters = strong.map((face) => ({
+    faces: [face.id],
+    sources: new Set([sourceOf(face)]), // what may never share a group: a photo, or one track
+    photos: new Set([face.photo_id]), // how many pictures a person is in, for ordering them
+  }));
   const between = new Map<string, number>();
   const key = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`;
   for (let i = 0; i < clusters.length; i++) {
@@ -103,6 +167,7 @@ export async function regroupLibrary() {
 
   const absorb = (a: number, b: number) => {
     clusters[a].faces.push(...clusters[b].faces);
+    clusters[b].sources.forEach((source) => clusters[a].sources.add(source));
     clusters[b].photos.forEach((photo) => clusters[a].photos.add(photo));
     alive.delete(b);
     const sizeA = size.get(a)!;
@@ -116,6 +181,19 @@ export async function regroupLibrary() {
     size.set(a, sizeA + sizeB);
   };
 
+  // A track's faces are one person before the clustering starts: they came from one unbroken
+  // appearance. Joining them first also gives the clustering a better first impression of that
+  // person than any single frame of them could.
+  const firstOfTrack = new Map<string, number>();
+  for (let i = 0; i < clusters.length; i++) {
+    const source = [...clusters[i].sources][0];
+    if (!source.endsWith(":")) {
+      const first = firstOfTrack.get(source);
+      if (first === undefined) firstOfTrack.set(source, i);
+      else absorb(first, i);
+    }
+  }
+
   while (true) {
     let best = { value: -Infinity, a: -1, b: -1 };
     for (const a of alive) {
@@ -126,8 +204,8 @@ export async function regroupLibrary() {
       }
     }
     if (best.a < 0 || best.value < config.sameFace) break;
-    // Never put two faces from one photo in the same group.
-    if ([...clusters[best.b].photos].some((photo) => clusters[best.a].photos.has(photo))) {
+    // Never put two faces of one photo, or two tracks of one video, in the same group.
+    if ([...clusters[best.b].sources].some((source) => clusters[best.a].sources.has(source))) {
       between.set(key(best.a, best.b), -Infinity);
       continue;
     }
@@ -169,12 +247,34 @@ export async function regroupLibrary() {
     let best = { index: -1, value: -Infinity };
     centres.forEach((centre, index) => {
       const value = similarity(vector, centre);
-      if (value > best.value && !groups[index].photos.has(face.photo_id)) best = { index, value };
+      if (value > best.value && !groups[index].sources.has(sourceOf(face))) best = { index, value };
     });
     const bar = face.is_strong ? config.sameFace : config.attachFace;
     if (best.index >= 0 && best.value >= bar) {
       personOf.set(face.id, best.index);
       evidence.set(face.id, { face: null, similarity: best.value }); // matched the group's average face
+    }
+  }
+
+  // Every face of a track follows its track. The clustering already keeps a track's strong faces
+  // together; this catches the weak ones, which are judged one by one and could otherwise drift
+  // off to another person or to nobody — even though they are frames of the very same appearance.
+  const byTrack = new Map<string, FaceRow[]>();
+  for (const face of rows) {
+    if (face.track === null) continue;
+    byTrack.set(sourceOf(face), [...(byTrack.get(sourceOf(face)) ?? []), face]);
+  }
+  for (const track of byTrack.values()) {
+    const ranked = [...track].sort((x, y) => y.quality - x.quality);
+    const leader = ranked.find((face) => personOf.has(face.id));
+    if (!leader) continue;
+    for (const face of track) {
+      if (face.id === leader.id || personOf.get(face.id) === personOf.get(leader.id)) continue;
+      personOf.set(face.id, personOf.get(leader.id)!);
+      evidence.set(face.id, {
+        face: leader.id,
+        similarity: similarity(vectors.get(face.id)!, vectors.get(leader.id)!),
+      });
     }
   }
 

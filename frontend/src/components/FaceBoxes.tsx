@@ -1,5 +1,3 @@
-import { photoUrl } from "@/lib/photoUrl";
-
 /** Box colour per person, so the same person keeps the same colour across photos. */
 const PALETTE = ["#2563eb", "#ea580c", "#16a34a", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#a16207"];
 export const personColour = (personId: number | null) =>
@@ -14,25 +12,26 @@ export type BoxFace = {
 };
 
 /**
- * The photo with a box around every face the pipeline found. Boxes are placed in percentages
- * of the photo's own pixel size, so they line up at any display width.
+ * A picture with a box around every face the pipeline found in it. Boxes are placed in
+ * percentages of the picture's own pixel size, so they line up at any display width.
+ *
+ * The picture is a photo, or — for faces out of a video — one of the stills the pipeline cut,
+ * which is why the source is passed in rather than worked out from a photo id.
  */
 export function FaceBoxes({
-  photoId,
-  photoKey,
+  src,
   width,
   height,
   faces,
 }: {
-  photoId: number;
-  photoKey: string;
+  src: string;
   width: number | null;
   height: number | null;
   faces: BoxFace[];
 }) {
   return (
     <div className="relative">
-      <img src={photoUrl(photoId, photoKey)} alt="" className="w-full rounded" />
+      <img src={src} alt="" className="w-full rounded" />
       {width &&
         height &&
         faces.map((face) => {
