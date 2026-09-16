@@ -44,9 +44,26 @@ def schedule(job_id: str, attempt: int) -> None:
     set_state(job_id, status="delivering", attempts=attempt)
 
 
-def due(limit: int = 10) -> list[str]:
-    """Jobs whose next delivery attempt is due now."""
-    return r().zrangebyscore(PENDING, 0, time.time(), start=0, num=limit)
+def claim_due(limit: int = 5) -> list[str]:
+    """Take the jobs whose next attempt is due, one worker only.
+
+    Reading the set and delivering would let two workers send the same webhook at once, so each
+    job is popped atomically and immediately put back with a short lease. The lease is replaced
+    by the real schedule on failure, removed on success, and expires if the worker dies mid-send.
+    """
+    lease = max(60.0, settings.WEBHOOK_TIMEOUT * 3)
+    claimed = []
+    for _ in range(limit):
+        popped = r().zpopmin(PENDING, 1)
+        if not popped:
+            break
+        job_id, due_at = popped[0]
+        if due_at > time.time():  # nothing is due yet, put it back
+            r().zadd(PENDING, {job_id: due_at})
+            break
+        r().zadd(PENDING, {job_id: time.time() + lease})
+        claimed.append(job_id)
+    return claimed
 
 
 def deliver(job_id: str, log=print) -> bool:

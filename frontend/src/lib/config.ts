@@ -15,4 +15,8 @@ export const config = {
   // Cosine similarity, same meaning as the pipeline's thresholds but applied here, where the vectors live.
   sameFace: Number(process.env.SAME_FACE ?? 0.45), // a strong face joins a person above this
   attachFace: Number(process.env.ATTACH_FACE ?? 0.5), // weak faces need to be closer, and never start a person
+  // Starting a new person is stricter than joining one. A face turned further than this can join
+  // someone it matches, but never becomes a person of its own: that is what turned one man's
+  // profile shot into a second person.
+  createMaxYaw: Number(process.env.CREATE_MAX_YAW ?? 0.35),
 };

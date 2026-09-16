@@ -4,20 +4,16 @@ Two faces of the same person give similar numbers; different people give differe
 """
 
 import numpy as np
-import onnxruntime as ort
-from insightface.model_zoo import get_model
 from insightface.model_zoo.arcface_onnx import ArcFaceONNX
 from insightface.utils import face_align
 
 from pipeline.config import EMBEDDER_MODEL
 from pipeline.entities import Face
+from pipeline.onnx import session as onnx_session
 
 
 def load_embedder() -> ArcFaceONNX:
-    # The model file says "batch size 1" but works with any batch; hide that warning.
-    ort.set_default_logger_severity(3)
-    embedder = get_model(str(EMBEDDER_MODEL), providers=["CPUExecutionProvider"])
-    return embedder
+    return ArcFaceONNX(model_file=str(EMBEDDER_MODEL), session=onnx_session(str(EMBEDDER_MODEL)))
 
 
 def align_face(image: np.ndarray, face: Face) -> None:

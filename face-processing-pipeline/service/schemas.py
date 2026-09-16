@@ -33,6 +33,7 @@ class Face(BaseModel):
     det_score: float
     quality: float
     is_strong: bool
+    yaw: float  # how far the head is turned; 0 = looking straight at the camera
     embedding: list[float]  # 512 numbers, length 1
 
 

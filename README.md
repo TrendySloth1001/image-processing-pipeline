@@ -157,6 +157,34 @@ load image (fix rotation) → SCRFD detect → drop tiny faces → align to 112�
 | `pipeline/cluster.py` | Groups strong faces, attaches weak ones, numbers people by photo count. |
 | `pipeline/db.py`, `export.py` | Used only by the folder-based test UI, not by the microservice. |
 
+## Speed on CPU
+
+Measured on this Mac (8 cores, Docker, no GPU) over eight 12-megapixel phone photos.
+
+| change | before | after |
+|---|---|---|
+| int8 models instead of fp32 | 1521 ms/photo | **574 ms/photo** (261 ms on an idle machine) |
+| decode capped at 2048px | 121 ms | 89 ms, same faces |
+| one worker with 8 threads | 1470 ms of work | 4 threads × 2 workers: ~1.7× the throughput |
+
+Both models are quantised to int8 when the image is built. They find the same faces (13 of 13,
+boxes within 2.3px), embeddings agree with the originals to 0.989, and pairwise similarities move
+by at most 0.03, so no grouping decision changes. `MODEL_PRECISION=fp32` switches back.
+
+Three findings behind those settings:
+
+- **Threads stop paying.** 1→2 threads is 1.9×, 2→4 is 1.9×, but 4→8 only 1.2×. Throughput comes
+  from more workers, not more threads each: `docker compose up -d --scale worker=2`.
+- **A bigger detector input loses faces.** At 1024 or 1280 the detector finds *fewer* faces (11 vs
+  13), because large selfie faces overflow its biggest anchor. Overlapping tiles are the way to
+  reach small faces instead, and they only run on photos above `TILE_MIN_PIXELS`, since a selfie
+  gains nothing from being cut into four.
+- **Decoding smaller costs nothing.** libjpeg can decode at 1/2, 1/4 or 1/8 scale and the detector
+  works at 640px regardless. `draft()` must be asked for a box with the photo's own shape: it
+  reduces by `min(width // asked, height // asked)`, so a square box does nothing to a 4:3 photo.
+
+Settings: `MODEL_PRECISION`, `ORT_THREADS`, `MAX_DECODE_SIDE`, `DETECT_TILES`, `TILE_MIN_PIXELS`.
+
 ## Development helpers
 
 **Folder-based UI** (http://localhost:8000): drop photos in, press **Run pipeline**, and browse the
@@ -174,12 +202,37 @@ acknowledges them; `FAIL_TIMES=2` makes it reject the first two attempts so retr
 the app container, so imports resolve without installing anything on the Mac. It opens
 `face-processing-pipeline/`; edit `frontend/` in a normal window.
 
-## Tuning the grouping
+## Grouping rules and tuning
 
-In `pipeline/config.py`: raise `CLUSTER_DISTANCE` if one person is split across groups, lower it if
-different people are mixed together; `MIN_PHOTOS_PER_PERSON` is 1 while testing so everyone shows.
-The same person photographed as a child, or in black and white, scores far below the same-person
-range and needs a manual merge rather than a looser threshold.
+**Joining a person is easy, starting one is not.** A face joins someone at 0.45 similarity (0.5 if
+it is weak), but to *start* a new person it must be strong and roughly facing the camera
+(`CREATE_MAX_YAW`, default 0.35). Without that asymmetry a single profile shot of a man already in
+the library becomes a second person, which is exactly what happened before the rule existed.
+
+**Merging is remembered.** The merge form on a person's page moves the faces across and records a
+link between the two best faces. Regrouping honours those links, so a merge is never undone by the
+next clustering pass. That is the fix for faces the model genuinely cannot match: a profile shot,
+or someone photographed as a child.
+
+Thresholds live in `frontend/src/lib/config.ts` (`SAME_FACE`, `ATTACH_FACE`, `CREATE_MAX_YAW`) and
+`pipeline/config.py` (quality bars, `CLUSTER_DISTANCE`, `MIN_PHOTOS_PER_PERSON`). Raise
+`CLUSTER_DISTANCE` if one person is split across groups; lower it if different people are mixed.
+
+### Measured, and deliberately not changed
+
+- **Detector threshold stays at 0.5.** Across twelve photos every candidate below it was hair, a
+  shoulder or blur; the weakest real face scored 0.61. Lowering it buys junk.
+- **More tiles than 2×2 hurt.** 3×3 and 4×4 add false boxes (a rug scored 0.36) without finding
+  anyone new.
+- **No geometric or magnitude filter.** False boxes have believable landmark geometry (eyes 0.42 of
+  the width apart, nose inside, mouth below) and ArcFace vector lengths inside the real range
+  (20.0 versus a real minimum of 20.4). Neither separates.
+- **Glint360K R100 is not better here.** It raises same-person scores (+0.74 vs +0.70 mean) but
+  raises different-people scores more (+0.45 vs +0.37), so the gap that decides grouping narrows,
+  at 19× the CPU of the int8 R50.
+- **Verifying weak detections against known people** works as a safety gate, not as extra recall:
+  junk matches known people at most 0.12 while real faces reach 0.92, but in this library there
+  were no real faces below the threshold to rescue.
 
 ## Notes
 

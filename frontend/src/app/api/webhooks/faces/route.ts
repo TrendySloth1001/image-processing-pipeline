@@ -11,6 +11,7 @@ type Face = {
   det_score: number;
   quality: number;
   is_strong: boolean;
+  yaw?: number;
   embedding: number[];
 };
 
@@ -53,11 +54,11 @@ export async function POST(request: Request) {
   await sql`DELETE FROM faces WHERE photo_id = ${photoId}`;
   for (const face of result.faces ?? []) {
     const [row] = await sql<{ id: number }[]>`
-      INSERT INTO faces (photo_id, bbox, det_score, quality, is_strong, embedding)
+      INSERT INTO faces (photo_id, bbox, det_score, quality, is_strong, yaw, embedding)
       VALUES (${photoId}, ${JSON.stringify(face.bbox)}::jsonb, ${face.det_score}, ${face.quality},
-              ${face.is_strong}, ${toVector(face.embedding)}::vector)
+              ${face.is_strong}, ${face.yaw ?? null}, ${toVector(face.embedding)}::vector)
       RETURNING id`;
-    await assignPerson(row.id, photoId, face.embedding, face.is_strong);
+    await assignPerson(row.id, photoId, face.embedding, face.is_strong, face.yaw ?? null);
   }
 
   await sql`

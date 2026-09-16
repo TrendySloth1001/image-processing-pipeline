@@ -107,7 +107,7 @@ export default async function Home({
           <p className="text-sm text-neutral-500">Nobody yet. Upload a few photos.</p>
         ) : (
           <div className="flex flex-wrap gap-5">
-            {people.map((person, index) => (
+            {people.map((person) => (
               <Link key={person.id} href={`/people/${person.id}`} className="w-28 text-center">
                 {person.cover && (
                   <FaceCrop
@@ -119,7 +119,8 @@ export default async function Home({
                     className="mx-auto rounded-full shadow"
                   />
                 )}
-                <div className="mt-2 text-sm font-medium">Person {index + 1}</div>
+                {/* The database id, the same number the person page and the inspect page use. */}
+                <div className="mt-2 text-sm font-medium">Person {person.id}</div>
                 <div className="text-xs text-neutral-500">
                   {person.photos} photo{person.photos === 1 ? "" : "s"}
                 </div>

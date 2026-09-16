@@ -7,6 +7,7 @@ by another after CLAIM_IDLE_MS.
 
 import json
 import os
+import socket
 import time
 
 import httpx
@@ -53,14 +54,17 @@ def handle(job_id: str, log=print) -> None:
 def main() -> None:
     storage.ensure_bucket()
     queue.ensure_group()
-    consumer = f"worker-{os.getpid()}"
+    # Every container's main process is PID 1, so the name needs the hostname (the container id)
+    # to stay unique. Two consumers sharing a name share their pending list, and then a crashed
+    # worker's job is never reclaimed.
+    consumer = os.environ.get("CONSUMER_NAME") or f"{socket.gethostname()}-{os.getpid()}"
     print("loading SCRFD and ArcFace…", flush=True)
     models()
     print(f"{consumer} ready: stream {settings.JOB_STREAM}, group {settings.CONSUMER_GROUP}", flush=True)
 
     while True:
-        # 1. deliveries that are due (first attempts and retries)
-        for job_id in delivery.due():
+        # 1. deliveries that are due (first attempts and retries), claimed so no other worker sends them
+        for job_id in delivery.claim_due():
             delivery.deliver(job_id)
 
         # 2. jobs a crashed worker never finished

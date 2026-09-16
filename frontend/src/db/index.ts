@@ -40,6 +40,15 @@ const DDL = [
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS matched_face_id integer`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS match_similarity real`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS assigned_by text`,
+  `ALTER TABLE faces ADD COLUMN IF NOT EXISTS yaw real`,  // how far the head is turned
+  // "These two faces are the same person", recorded when you merge two people by hand.
+  // Regrouping honours these, so a merge is not undone by the next clustering pass.
+  `CREATE TABLE IF NOT EXISTS links (
+     id serial PRIMARY KEY,
+     face_a integer NOT NULL REFERENCES faces (id) ON DELETE CASCADE,
+     face_b integer NOT NULL REFERENCES faces (id) ON DELETE CASCADE,
+     created_at timestamp NOT NULL DEFAULT now()
+   )`,
   `CREATE INDEX IF NOT EXISTS faces_person_idx ON faces (person_id)`,
   `CREATE INDEX IF NOT EXISTS faces_embedding_idx ON faces USING hnsw (embedding vector_cosine_ops)`,
 ];

@@ -2,6 +2,10 @@
 # The pipeline owns no data: jobs come off Redis, photos come from MinIO, results go out by webhook.
 # The frontend owns its own `gallery` database (Postgres + pgvector) with the faces and people.
 x-env: &env
+  # 4 threads per worker, because past that the gain per core collapses. For more throughput
+  # run more workers: docker compose up -d --scale worker=2
+  ORT_THREADS: "4"
+  MAX_DECODE_SIDE: "2048"
   REDIS_URL: redis://redis:6379/0
   S3_ENDPOINT: http://minio:9000
   S3_BUCKET: faces

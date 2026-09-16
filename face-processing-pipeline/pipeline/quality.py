@@ -38,5 +38,6 @@ def score_face(face: Face) -> None:
     size = face_size(face)
     blur = blur_score(face.aligned)
     yaw = yaw_ratio(face)
+    face.yaw = yaw  # the consumer uses it to decide what may start a new person
     face.is_strong = size >= STRONG_FACE_SIZE and blur >= MIN_BLUR_SCORE and yaw <= MAX_YAW_RATIO
     face.quality = face.det_score * min(size / STRONG_FACE_SIZE, 1.0) * (1 - min(yaw, 1.0))

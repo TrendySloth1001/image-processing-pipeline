@@ -42,6 +42,7 @@ def process(data: bytes) -> dict:
                 "det_score": round(float(face.det_score), 4),
                 "quality": round(float(face.quality), 4),
                 "is_strong": bool(face.is_strong),
+                "yaw": round(float(face.yaw), 3),  # 0 = facing the camera
                 "embedding": [round(float(v), 6) for v in face.embedding],
             }
             for face in faces
