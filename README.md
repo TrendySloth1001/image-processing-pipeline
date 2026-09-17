@@ -337,6 +337,12 @@ well enough to join either, they were the same person all along and are merged �
 a photo, which is proof they are not. That is the repair for a person built from photographs and
 the same person found in a video, when whichever arrived first was too different to match.
 
+**Pictures open in the app, not in a browser tab.** Clicking an appearance opens a viewer over
+the gallery: the frame with the face boxed on it, **Play** to watch the clip from the moment that
+appearance starts, arrow keys to step through the person's other pictures and Escape to close.
+Handing the file to the browser instead loses the gallery, the face you were looking at and the
+time it came from, and gives back a bare file in a tab.
+
 **You can say yes, and you can say no.** The suggestions on a person's page — *Might also be this
 person* — are the ones the matcher was not sure enough about to act on, and **Same person** settles
 one in a click. **not them** on any picture takes it back out into a person of its own. Both are

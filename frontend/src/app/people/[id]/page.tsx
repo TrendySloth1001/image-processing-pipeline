@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { FaceCrop } from "@/components/FaceCrop";
-import { clock } from "@/components/MediaTile";
+import { FaceOf } from "@/components/FaceCrop";
+import { MediaGrid, type Item } from "@/components/MediaGrid";
 import { ensureSchema, sql } from "@/db";
 import { config } from "@/lib/config";
 import { facePicture, photoUrl, videoUrl } from "@/lib/photoUrl";
@@ -101,6 +101,25 @@ export default async function PersonPage({
   const videos = new Set(rows.filter((row) => row.kind === "video").map((row) => row.photo_id)).size;
   const photos = new Set(rows.filter((row) => row.kind !== "video").map((row) => row.photo_id)).size;
 
+  // Everything the viewer needs, worked out here where the URL helpers are.
+  const items: Item[] = tiles.map((tile) => {
+    const isVideo = tile.kind === "video";
+    const picture = facePicture(tile);
+    return {
+      id: `${tile.photo_id}:${tile.track ?? ""}`,
+      faceId: tile.face_id,
+      kind: isVideo ? "video" : "photo",
+      name: tile.name,
+      frameSrc: isVideo ? picture.src : photoUrl(tile.photo_id, tile.key),
+      frameWidth: isVideo ? picture.width : tile.width,
+      frameHeight: isVideo ? picture.height : tile.height,
+      bbox: tile.bbox,
+      videoSrc: isVideo ? videoUrl(tile.photo_id, tile.key) : undefined,
+      startMs: tile.track_first_ms ?? undefined,
+      endMs: tile.track_last_ms ?? undefined,
+    };
+  });
+
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
       <Link href="/" className="text-sm text-blue-600">← All people</Link>
@@ -112,7 +131,7 @@ export default async function PersonPage({
       )}
 
       <div className="flex items-center gap-5">
-        <FaceCrop face={cover} size={120} className="rounded-full shadow" />
+        <FaceOf face={cover} size={120} className="rounded-full shadow" />
         <div>
           <h1 className="font-serif text-3xl">Person {id}</h1>
           <p className="text-sm text-neutral-500">
@@ -140,7 +159,7 @@ export default async function PersonPage({
             {suggestions.map((suggestion) => (
               <div key={suggestion.id} className="w-32 text-center">
                 <Link href={`/people/${suggestion.id}`}>
-                  {suggestion.cover && <FaceCrop face={suggestion.cover} className="mx-auto rounded-full shadow" />}
+                  {suggestion.cover && <FaceOf face={suggestion.cover} className="mx-auto rounded-full shadow" />}
                 </Link>
                 <div className="mt-2 text-sm font-medium">Person {suggestion.id}</div>
                 <div className="text-xs text-neutral-500">
@@ -160,67 +179,7 @@ export default async function PersonPage({
         </section>
       )}
 
-      {/* One tile per photo, and per appearance in a video. A video tile shows the face as it was
-          caught, not the film's cover: every appearance of a thirty-minute clip otherwise looks
-          exactly the same. Clicking opens that frame full size; the time opens the video there. */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-1">
-        {tiles.map((tile) => {
-          const isVideo = tile.kind === "video";
-          const start = tile.track_first_ms ?? 0;
-          const frame = facePicture(tile);
-          return (
-            <div key={`${tile.photo_id}:${tile.track ?? ""}`} className="group relative">
-              <a
-                href={isVideo ? frame.src : photoUrl(tile.photo_id, tile.key)}
-                target="_blank"
-                rel="noreferrer"
-                title={isVideo ? "The frame this face was caught in" : tile.name}
-                className="block"
-              >
-                {isVideo ? (
-                  <FaceCrop face={tile} fill zoom={2.2} className="rounded" />
-                ) : (
-                  <img
-                    src={photoUrl(tile.photo_id, tile.key)}
-                    alt={tile.name}
-                    className="aspect-square w-full rounded object-cover"
-                  />
-                )}
-              </a>
-              {isVideo ? (
-                <a
-                  href={`${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Play the video from here"
-                  className="absolute bottom-1 left-1 rounded bg-black/65 px-1.5 text-[11px] text-white hover:bg-black/85"
-                >
-                  ▶ {clock(start)}–{clock(tile.track_last_ms ?? start)}
-                </a>
-              ) : (
-                <FaceCrop
-                  face={tile}
-                  size={44}
-                  className="pointer-events-none absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
-                />
-              )}
-              {tiles.length > 1 && (
-                <form action="/api/split" method="post" className="absolute right-1 top-1">
-                  <input type="hidden" name="from" value={id} />
-                  <input type="hidden" name="face" value={tile.face_id} />
-                  <button
-                    type="submit"
-                    title={`Take this out of Person ${id}`}
-                    className="rounded bg-black/60 px-1.5 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100"
-                  >
-                    not them
-                  </button>
-                </form>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <MediaGrid items={items} personId={id} />
 
       {others.length > 0 && (
         <section className="rounded-2xl border border-black/10 bg-white p-5 dark:border-white/15 dark:bg-neutral-900">

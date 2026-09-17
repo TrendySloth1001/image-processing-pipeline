@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { FaceCrop } from "@/components/FaceCrop";
+import { FaceOf } from "@/components/FaceCrop";
 import { MediaTile } from "@/components/MediaTile";
 import { UploadForm } from "@/components/UploadForm";
 import { ensureSchema, sql } from "@/db";
@@ -119,7 +119,7 @@ export default async function Home({
           <div className="flex flex-wrap gap-5">
             {people.map((person) => (
               <Link key={person.id} href={`/people/${person.id}`} className="w-28 text-center">
-                {person.cover && <FaceCrop face={person.cover} className="mx-auto rounded-full shadow" />}
+                {person.cover && <FaceOf face={person.cover} className="mx-auto rounded-full shadow" />}
                 {/* The database id, the same number the person page and the inspect page use. */}
                 <div className="mt-2 text-sm font-medium">Person {person.id}</div>
                 <div className="text-xs text-neutral-500">
