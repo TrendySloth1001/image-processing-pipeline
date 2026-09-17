@@ -162,9 +162,9 @@ Tables and the HNSW cosine index are created on first use by `ensureSchema()` in
 **Grouping happens twice over.** On arrival, the webhook stores each face and asks pgvector
 (`embedding <=> $1`) which people are nearest, ignoring anything from the same photo or video, and
 joins the best one — see [Grouping rules](#grouping-rules-and-tuning) for when — so people appear
-seconds after an upload. On demand, **Regroup everything** re-clusters the library with average
-linkage the way the batch pipeline does, which repairs groups that drifted apart. It renumbers
-people, so person URLs change after a regroup.
+seconds after an upload. On demand, **Regroup everything** clusters the whole library again from
+scratch, which repairs groups that drifted apart. It renumbers people, so person URLs change
+after a regroup.
 
 **Webhook safety:** every delivery is checked against the HMAC signature (401 otherwise), and the
 handler is idempotent — it replaces a photo's faces instead of appending, because the pipeline
@@ -314,9 +314,15 @@ put far below any absolute threshold.
 
 **A person is scored by their closest face, not their average one.** Averaging someone's face
 across years, lighting and half-turns blurs the very detail a hard face has to match: over the
-test library the closest face beat the average on three appearances out of five. Both the arrival
-matcher and the regrouping pass use it, so **Regroup everything** no longer changes answers that
-were already made.
+test library the closest face beat the average on three appearances out of five.
+
+The same holds when regrouping compares two *groups*, and getting it wrong there was worse. The
+clustering used average linkage — the mean similarity between every member of one group and every
+member of the other — which sounds more careful and is not. One person across half an hour of
+video varies so much that the mean inside their own true group falls under the bar long before
+the group is complete, so merging stops with the person in pieces: a clip the matcher had settled
+into twelve people came back out of regrouping as sixty-six. Both passes now ask the same
+question, the closest pair, and regrouping that same clip gives sixteen.
 
 **Video is judged by video's numbers.** A face in a 720p frame is 34-49px with a blur score of
 7-45, where the same people in photos are 102-874px and 198-6929 — the blur score is partly a

@@ -315,24 +315,26 @@ export async function regroupLibrary() {
     photos: new Set([face.photo_id]), // how many pictures a person is in, for ordering them
     blocked: new Set(apartFrom.get(face.id) ?? []), // faces this group may never take in
   }));
-  // Two views of the same pairs, both kept up to date as groups merge: `between` is the mean
-  // similarity between members, which is what decides the clustering, and `closest` is the best
-  // single pair, which is what the relative rule asks about. Recomputing `closest` from the faces
-  // each time would be hopeless — one thirty-two minute video makes hundreds of groups, and every
-  // sweep would compare every face with every other.
-  const between = new Map<string, number>();
+  // How close two groups are: the closest pair of faces between them.
+  //
+  // This used to be the *mean* similarity between members, which sounds more careful and is far
+  // worse. One person across half an hour of video varies enormously — lighting, angle, motion —
+  // so the mean inside their own true group falls under the bar long before the group is
+  // complete, and merging stops with the person in pieces. A thirty-two minute clip that the
+  // matcher had settled into twelve people came back out of regrouping as sixty-six.
+  //
+  // The closest pair is also the question the matcher asks when a face first arrives: it compares
+  // a face with a person's nearest face, not their average. Asking the same question twice is
+  // what makes "Regroup everything" stop contradicting what the app already decided.
   const closest = new Map<string, number>();
   const key = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`;
   for (let i = 0; i < clusters.length; i++) {
     for (let j = i + 1; j < clusters.length; j++) {
-      const value = similarity(vectors.get(clusters[i].faces[0])!, vectors.get(clusters[j].faces[0])!);
-      between.set(key(i, j), value); // one face each to start with, so the two agree
-      closest.set(key(i, j), value);
+      closest.set(key(i, j), similarity(vectors.get(clusters[i].faces[0])!, vectors.get(clusters[j].faces[0])!));
     }
   }
 
   const alive = new Set(clusters.map((_, i) => i));
-  const size = new Map([...alive].map((i) => [i, 1]));
 
   const absorb = (a: number, b: number) => {
     clusters[a].faces.push(...clusters[b].faces);
@@ -341,19 +343,13 @@ export async function regroupLibrary() {
     clusters[b].photos.forEach((photo) => clusters[a].photos.add(photo));
     clusters[b].blocked.forEach((face) => clusters[a].blocked.add(face));
     alive.delete(b);
-    const sizeA = size.get(a)!;
-    const sizeB = size.get(b)!;
     for (const c of alive) {
       if (c === a) continue;
-      const merged =
-        ((between.get(key(a, c)) ?? 0) * sizeA + (between.get(key(b, c)) ?? 0) * sizeB) / (sizeA + sizeB);
-      between.set(key(a, c), merged); // average linkage: the mean similarity between members
       closest.set(
         key(a, c),
         Math.max(closest.get(key(a, c)) ?? -Infinity, closest.get(key(b, c)) ?? -Infinity),
       );
     }
-    size.set(a, sizeA + sizeB);
   };
 
   // A track's faces are one person before the clustering starts: they came from one unbroken
@@ -374,7 +370,7 @@ export async function regroupLibrary() {
     for (const a of alive) {
       for (const b of alive) {
         if (b <= a) continue;
-        const value = between.get(key(a, b)) ?? -Infinity;
+        const value = closest.get(key(a, b)) ?? -Infinity;
         if (value > best.value) best = { value, a, b };
       }
     }
@@ -386,7 +382,7 @@ export async function regroupLibrary() {
       clusters[best.b].faces.some((face) => clusters[best.a].blocked.has(face)) ||
       clusters[best.a].faces.some((face) => clusters[best.b].blocked.has(face));
     if (forbidden) {
-      between.set(key(best.a, best.b), -Infinity);
+      closest.set(key(best.a, best.b), -Infinity);
       continue;
     }
     absorb(best.a, best.b);
