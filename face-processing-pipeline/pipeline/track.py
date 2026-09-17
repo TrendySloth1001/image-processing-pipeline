@@ -19,29 +19,21 @@ import numpy as np
 from pipeline.config import (MIN_TRACK_FRAMES, TRACK_FACES, TRACK_IOU, TRACK_MAX_GAP_MS,
                              TRACK_NEAR_FACE, TRACK_REDUNDANT, TRACK_SAME_FACE)
 from pipeline.entities import Face
-from pipeline.video import face_still
+from pipeline.video import frame_still
 
 
 @dataclass
 class Kept:
-    """One representative face of a track, with a small still cut out of its frame.
+    """One representative face of a track, and the moment it was seen.
 
-    The still is made the moment the face wins a slot rather than at the end, because holding
-    whole frames until then would be the largest thing in the worker's memory by far: a JPEG of
-    the face and its surroundings is some tens of kilobytes, a 720p frame is 2.7 megabytes.
+    The picture itself lives in the tracker's `frames`, keyed by that moment, because everybody
+    on screen at once shares one frame and a face that holds its slot for a hundred frames still
+    only files the few it is kept for. The frame is encoded when a face first wins a slot rather
+    than at the end, since holding raw 720p frames would be the largest thing in memory by far.
     """
 
     face: Face
     at_ms: int
-    still: bytes
-    still_width: int
-    still_height: int
-    still_bbox: list[float]  # the face inside the still, in the still's own pixels
-
-    @classmethod
-    def cut(cls, face: Face, at_ms: int, frame: np.ndarray) -> "Kept":
-        data, width, height, bbox = face_still(frame, face.bbox)
-        return cls(face, at_ms, data, width, height, bbox)
 
 
 @dataclass
@@ -78,7 +70,7 @@ class Track:
         self.frames += 1
         self.seen_at = frame_index
 
-    def _offer(self, face: Face, at_ms: int, frame: np.ndarray) -> None:
+    def _offer(self, face: Face, at_ms: int, frame: np.ndarray, remember) -> None:
         """Decide whether this face earns one of the track's few representative slots.
 
         A face that looks almost the same as one already kept is not worth a slot; it only takes
@@ -92,14 +84,17 @@ class Track:
 
         if twin >= 0:
             if face.quality > self.faces[twin].face.quality:
-                self.faces[twin] = Kept.cut(face, at_ms, frame)
+                self.faces[twin] = Kept(face, at_ms)
+                remember(at_ms, frame)
             return
         if len(self.faces) < TRACK_FACES:
-            self.faces.append(Kept.cut(face, at_ms, frame))
+            self.faces.append(Kept(face, at_ms))
+            remember(at_ms, frame)
             return
         worst = min(range(len(self.faces)), key=lambda i: self.faces[i].face.quality)
         if face.quality > self.faces[worst].face.quality:
-            self.faces[worst] = Kept.cut(face, at_ms, frame)
+            self.faces[worst] = Kept(face, at_ms)
+            remember(at_ms, frame)
 
 
 def iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -119,6 +114,11 @@ class Tracker:
     def __init__(self) -> None:
         self.tracks: list[Track] = []
         self.frame_index = -1
+        self.frames: dict[int, tuple[bytes, int, int]] = {}  # moment -> the whole frame, as a JPEG
+
+    def _remember(self, at_ms: int, frame: np.ndarray) -> None:
+        if at_ms not in self.frames:
+            self.frames[at_ms] = frame_still(frame)
 
     def update(self, at_ms: int, faces: list[Face], frame: np.ndarray) -> None:
         self.frame_index += 1
@@ -132,7 +132,7 @@ class Tracker:
                               mean=face.embedding.copy(), last=face.embedding)
                 self.tracks.append(track)
             track._absorb(face, at_ms, self.frame_index)
-            track._offer(face, at_ms, frame)
+            track._offer(face, at_ms, frame, self._remember)
 
     def _best_match(self, face: Face, at_ms: int) -> Track | None:
         best, score = None, 0.0
@@ -164,4 +164,8 @@ class Tracker:
         for track in kept:
             track.faces.sort(key=lambda k: -k.face.quality)
         kept.sort(key=lambda t: (t.first_ms, t.id))
+        # Frames whose only claimant lost its slot, or whose track turned out to be a flicker,
+        # are nobody's picture now.
+        wanted = {face.at_ms for track in kept for face in track.faces}
+        self.frames = {at_ms: frame for at_ms, frame in self.frames.items() if at_ms in wanted}
         return kept

@@ -61,8 +61,9 @@ TRACK_IOU = 0.3            # how much the box must overlap for that rescue to ap
 TRACK_MAX_GAP_MS = 2000    # away longer than this and the next sighting is a new appearance
 TRACK_REDUNDANT = 0.92     # a face this close to one already kept adds nothing new
 MIN_TRACK_FRAMES = 2       # seen in one frame only: a flicker, not a person
-STILL_MAX_SIDE = 512       # the JPEG kept for each representative face
-STILL_PADDING = 2.5        # how much of the surroundings it keeps, as a multiple of the face
+# Each representative face is filed with the whole frame it was seen in, at the size the frame
+# was decoded, so the consumer can show what was happening and not only the face. Frames are
+# shared between everyone visible at that moment, which is what makes keeping them whole cheap.
 STILL_QUALITY = 82
 POSTER_MAX_SIDE = 1280     # the video's own thumbnail, cut from its first sampled frame
 

@@ -13,8 +13,8 @@ import av
 import cv2
 import numpy as np
 
-from pipeline.config import (POSTER_MAX_SIDE, STILL_MAX_SIDE, STILL_PADDING, STILL_QUALITY,
-                             VIDEO_FPS, VIDEO_MAX_SECONDS, VIDEO_MAX_SIDE)
+from pipeline.config import (POSTER_MAX_SIDE, STILL_QUALITY, VIDEO_FPS, VIDEO_MAX_SECONDS,
+                             VIDEO_MAX_SIDE)
 
 
 @dataclass
@@ -108,29 +108,19 @@ def poster(frame: np.ndarray) -> tuple[bytes, int, int]:
     return data, image.shape[1], image.shape[0]
 
 
-def face_still(frame: np.ndarray, bbox: np.ndarray) -> tuple[bytes, int, int, list[float]]:
-    """Cut the face out of its frame with some room around it, as a small JPEG.
+def frame_still(frame: np.ndarray) -> tuple[bytes, int, int]:
+    """The whole frame, as it was sampled, as a JPEG.
 
-    Keeping whole frames for every face a video contains would be gigabytes; this keeps what the
-    consumer actually shows. The box is returned in the still's own coordinates, so the app can
-    draw it exactly as it does on a photo.
+    The obvious saving is to keep only a crop around the face, and that is what this did first.
+    It costs nothing in the thumbnail — the consumer zooms into the same pixels either way — but
+    it throws away the picture: you can see the face and never what was happening around it. The
+    frame is kept whole instead, at the size it was decoded, and the consumer crops for a
+    thumbnail and shows the whole thing when asked.
+
+    It is affordable because frames are shared. Everybody on screen at one moment is one frame,
+    and a face that keeps its slot for a hundred frames still only files the few it is kept for.
     """
-    height, width = frame.shape[:2]
-    x1, y1, x2, y2 = (float(v) for v in bbox)
-    side = max(x2 - x1, y2 - y1) * STILL_PADDING
-    centre_x, centre_y = (x1 + x2) / 2, (y1 + y2) / 2
-    left = int(max(0, min(width - 1, centre_x - side / 2)))
-    top = int(max(0, min(height - 1, centre_y - side / 2)))
-    right = int(max(left + 1, min(width, centre_x + side / 2)))
-    bottom = int(max(top + 1, min(height, centre_y + side / 2)))
-
-    crop = frame[top:bottom, left:right]
-    scale = min(1.0, STILL_MAX_SIDE / max(crop.shape[:2]))
-    if scale < 1.0:
-        crop = cv2.resize(crop, (max(1, round(crop.shape[1] * scale)), max(1, round(crop.shape[0] * scale))),
-                          interpolation=cv2.INTER_AREA)
-    inside = [(x1 - left) * scale, (y1 - top) * scale, (x2 - left) * scale, (y2 - top) * scale]
-    return encode_jpeg(crop), crop.shape[1], crop.shape[0], [round(v, 2) for v in inside]
+    return encode_jpeg(frame), frame.shape[1], frame.shape[0]
 
 
 def read_all(source) -> io.BytesIO:

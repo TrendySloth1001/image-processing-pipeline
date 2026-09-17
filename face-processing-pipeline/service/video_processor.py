@@ -63,6 +63,12 @@ def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) ->
 
     tracks = tracker.finish(sampled)
     poster_key = store("poster", poster[0]) if poster else None
+    # One upload per moment, however many people were on screen in it.
+    frames = {
+        at_ms: {"key": store(f"frame{at_ms}", data), "width": width, "height": height}
+        for at_ms, (data, width, height) in tracker.frames.items()
+    }
+    log(f"  {len(frames)} frame(s) filed for {sum(len(t.faces) for t in tracks)} kept face(s)")
 
     return {
         "kind": "video",
@@ -88,16 +94,13 @@ def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) ->
                 "faces": [
                     _face_payload(kept.face, {
                         "at_ms": kept.at_ms,
-                        # The box is in the still's pixels, not the video's: the still is what the
-                        # consumer has to show, so that is the only frame of reference it needs.
-                        "bbox": kept.still_bbox,
-                        "still": {
-                            "key": store(f"t{index}f{position}", kept.still),
-                            "width": kept.still_width,
-                            "height": kept.still_height,
-                        },
+                        # The box is in the pixels of the frame filed with it, which is the whole
+                        # frame as it was sampled: the consumer crops it for a thumbnail and shows
+                        # all of it when somebody wants to see what was going on.
+                        "bbox": [round(float(v), 2) for v in kept.face.bbox],
+                        "still": frames[kept.at_ms],
                     })
-                    for position, kept in enumerate(track.faces)
+                    for kept in track.faces
                 ],
             }
             for index, track in enumerate(tracks)
