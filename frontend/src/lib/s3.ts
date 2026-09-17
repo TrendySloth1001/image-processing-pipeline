@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -5,6 +7,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 
 import { config } from "./config";
 
@@ -19,6 +22,26 @@ export async function putObject(key: string, body: Buffer, contentType: string) 
   await s3.send(
     new PutObjectCommand({ Bucket: config.s3.bucket, Key: key, Body: body, ContentType: contentType }),
   );
+  return key;
+}
+
+/**
+ * Sends a stream to storage without ever holding it whole.
+ *
+ * A video is not a photo. Reading one into a Buffer to hand it over costs its whole size in
+ * memory several times at once — once for the request body, once for the array buffer, once for
+ * the copy — which is how a phone video took this process past the container's memory limit and
+ * had it killed. `Upload` cuts the stream into parts, sends them, and forgets them, so the cost
+ * is a few parts at a time whatever the file weighs.
+ */
+export async function putStream(key: string, body: Readable, contentType: string) {
+  const upload = new Upload({
+    client: s3,
+    params: { Bucket: config.s3.bucket, Key: key, Body: body, ContentType: contentType },
+    partSize: 8 * 1024 * 1024,
+    queueSize: 2, // parts in flight: this many times partSize is the most it holds
+  });
+  await upload.done();
   return key;
 }
 

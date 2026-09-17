@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { FaceCrop } from "@/components/FaceCrop";
 import { MediaTile } from "@/components/MediaTile";
+import { UploadForm } from "@/components/UploadForm";
 import { ensureSchema, sql } from "@/db";
 import { photoUrl } from "@/lib/photoUrl";
 
@@ -91,13 +92,7 @@ export default async function Home({
 
       <section className="rounded-2xl border border-black/10 bg-white p-5 dark:border-white/15 dark:bg-neutral-900">
         <h2 className="mb-3 font-medium">Add photos and videos</h2>
-        <form action="/api/upload" method="post" encType="multipart/form-data" className="flex flex-wrap items-center gap-3">
-          <input type="file" name="files" multiple accept="image/*,video/*" required className="text-sm" />
-          <button type="submit" className="rounded-full bg-blue-600 px-4 py-2 text-sm text-white">Upload</button>
-          <span className="text-sm text-neutral-500">
-            Photos or videos. They go to S3, then the queue; faces come back by webhook.
-          </span>
-        </form>
+        <UploadForm />
       </section>
 
       <section className="rounded-2xl border border-black/10 bg-white p-5 dark:border-white/15 dark:bg-neutral-900">

@@ -9,6 +9,8 @@ type FaceRow = {
   id: number;
   photo_id: number;
   track: number | null;
+  track_first_ms: number | null;
+  track_last_ms: number | null;
   quality: number;
   is_strong: boolean;
   yaw: number | null;
@@ -16,15 +18,59 @@ type FaceRow = {
 };
 
 /**
- * What two faces have to come from before they are forbidden to be the same person.
- *
- * Two faces in one photo are almost never one person, and the same holds for two faces in one
- * frame of a video — which is what two tracks of one video mean. Faces inside a single track are
- * the same person by construction, so the track has to be part of the key: without it every face
- * of a video would be forbidden from joining the rest of its own appearance.
+ * Where a face came from: one photograph, or one appearance in one video. Faces sharing a source
+ * are the same person by construction, which is why the track has to be part of the key.
  */
 const sourceOf = (face: { photo_id: number; track: number | null }) =>
   `${face.photo_id}:${face.track ?? ""}`;
+
+/**
+ * Which sources are proof of being different people — everything that shares a *moment*.
+ *
+ * Two faces in one photograph, and two appearances of one video that are on screen at the same
+ * time. Two appearances of one video at different times are left free to be the same person,
+ * because very often they are: somebody walks out of shot and comes back.
+ */
+function conflictingSources(rows: FaceRow[]): Map<string, Set<string>> {
+  const spans = new Map<string, { photo: number; track: number | null; from: number; to: number }>();
+  for (const face of rows) {
+    const key = sourceOf(face);
+    const span = spans.get(key);
+    const from = face.track_first_ms ?? 0;
+    const to = face.track_last_ms ?? 0;
+    if (span) {
+      span.from = Math.min(span.from, from);
+      span.to = Math.max(span.to, to);
+    } else {
+      spans.set(key, { photo: face.photo_id, track: face.track, from, to });
+    }
+  }
+
+  const byPhoto = new Map<number, [string, { track: number | null; from: number; to: number }][]>();
+  for (const [key, span] of spans) {
+    byPhoto.set(span.photo, [...(byPhoto.get(span.photo) ?? []), [key, span]]);
+  }
+
+  const conflicts = new Map<string, Set<string>>();
+  const note = (a: string, b: string) => {
+    conflicts.set(a, (conflicts.get(a) ?? new Set()).add(b));
+    conflicts.set(b, (conflicts.get(b) ?? new Set()).add(a));
+  };
+  for (const sources of byPhoto.values()) {
+    for (let i = 0; i < sources.length; i++) {
+      for (let j = i + 1; j < sources.length; j++) {
+        const [keyA, a] = sources[i];
+        const [keyB, b] = sources[j];
+        const together =
+          a.track === null || b.track === null // a photograph: everyone in it is someone else
+            ? true
+            : a.from <= b.to && a.to >= b.from; // appearances overlapping in time
+        if (together) note(keyA, keyB);
+      }
+    }
+  }
+  return conflicts;
+}
 
 /**
  * Joining a person is easy, starting one is not. A face that is small, blurry or turned away can
@@ -45,20 +91,36 @@ export function average(embeddings: number[][]): number[] {
 
 type Candidate = { personId: number; faceId: number; similarity: number };
 
+/** Where a face came from, and — for an appearance in a video — when. */
+export type Source = { photoId: number; track: number | null; fromMs: number | null; toMs: number | null };
+
 /**
  * Who this face could be: every person among its nearest already-grouped neighbours, with the
- * closest face of theirs. Anything from the same photo or video is ignored, because two faces
- * in one picture are almost never the same person.
+ * closest face of theirs.
+ *
+ * What it must ignore is whatever is proof of being somebody else, and that is *sharing a
+ * moment*, not sharing a file. Two faces in one photograph are two people. Two appearances in
+ * one video that are on screen at the same time are two people. Two appearances in one video an
+ * hour apart are very often the same person walking back into shot — and ruling out the whole
+ * video, as this did at first, made that impossible: a thirty-two minute clip came back as three
+ * hundred strangers, because no appearance in it was ever allowed to match another.
  *
  * Looking at the nearest handful rather than only the single nearest is what makes it possible
  * to ask how far ahead the winner is — see `decide`.
  */
-async function candidates(vector: string, photoId: number): Promise<Candidate[]> {
+async function candidates(vector: string, source: Source): Promise<Candidate[]> {
+  const track = source.track ?? -1;
   const rows = await sql<{ person_id: number; id: number; similarity: number }[]>`
     SELECT DISTINCT ON (person_id) person_id, id, 1 - (embedding <=> ${vector}::vector) AS similarity
       FROM (SELECT person_id, id, embedding
               FROM faces
-             WHERE person_id IS NOT NULL AND photo_id <> ${photoId}
+             WHERE person_id IS NOT NULL
+               -- itself, and every other face of the same photograph
+               AND NOT (photo_id = ${source.photoId} AND COALESCE(track, -1) = ${track})
+               -- and any appearance of the same video that is on screen at the same moment
+               AND NOT (photo_id = ${source.photoId} AND track IS NOT NULL
+                        AND ${source.fromMs}::int IS NOT NULL
+                        AND track_first_ms <= ${source.toMs} AND track_last_ms >= ${source.fromMs})
              ORDER BY embedding <=> ${vector}::vector
              LIMIT ${config.matchNeighbours}) near
      ORDER BY person_id, similarity DESC`;
@@ -140,11 +202,15 @@ async function bridge(found: Candidate[], isStrong: boolean): Promise<number | n
   const threshold = isStrong ? config.sameFace : config.attachFace;
   if (!second || second.similarity < threshold) return null;
 
-  // Refused if they share a picture, and refused if you have already said they are different.
+  // Refused if they are ever on screen together, and refused if you have already said they are
+  // different people.
   const clash = await sql<{ one: number }[]>`
     SELECT 1 AS one
       FROM faces a JOIN faces b
-        ON a.photo_id = b.photo_id AND COALESCE(a.track, -1) = COALESCE(b.track, -1)
+        ON a.photo_id = b.photo_id
+       AND (COALESCE(a.track, -1) = COALESCE(b.track, -1)
+         OR (a.track IS NOT NULL AND b.track IS NOT NULL
+             AND a.track_first_ms <= b.track_last_ms AND a.track_last_ms >= b.track_first_ms))
      WHERE a.person_id = ${best.personId} AND b.person_id = ${second.personId}
      UNION ALL
     SELECT 1 AS one
@@ -176,7 +242,7 @@ export async function assignPerson(
   isStrong: boolean,
   yaw: number | null,
 ): Promise<number | null> {
-  const found = await candidates(toVector(embedding), photoId);
+  const found = await candidates(toVector(embedding), { photoId, track: null, fromMs: null, toMs: null });
   const decision = decide(found, isStrong, yaw);
   const personId = await apply([faceId], decision);
   if (decision.personId !== null) await bridge(found, isStrong);
@@ -194,11 +260,17 @@ export async function assignPerson(
  */
 export async function assignTrack(
   photoId: number,
+  track: { track: number; first_ms: number; last_ms: number },
   faces: { id: number; embedding: number[]; isStrong: boolean; yaw: number | null }[],
 ): Promise<number | null> {
   if (faces.length === 0) return null;
   const [best] = faces; // the pipeline delivers a track's faces best first
-  const found = await candidates(toVector(average(faces.map((face) => face.embedding))), photoId);
+  const found = await candidates(toVector(average(faces.map((face) => face.embedding))), {
+    photoId,
+    track: track.track,
+    fromMs: track.first_ms,
+    toMs: track.last_ms,
+  });
   const decision = decide(found, best.isStrong, best.yaw);
   const personId = await apply(faces.map((face) => face.id), decision);
   if (decision.personId !== null) await bridge(found, best.isStrong);
@@ -213,7 +285,8 @@ export async function assignTrack(
  */
 export async function regroupLibrary() {
   const rows = await sql<FaceRow[]>`
-    SELECT id, photo_id, track, quality, is_strong, yaw, embedding::text AS embedding
+    SELECT id, photo_id, track, track_first_ms, track_last_ms, quality, is_strong, yaw,
+           embedding::text AS embedding
       FROM faces ORDER BY id`;
   if (rows.length === 0) return { people: 0, faces: 0, unassigned: 0 };
   const links = await sql<{ face_a: number; face_b: number; kind: string }[]>`
@@ -233,17 +306,28 @@ export async function regroupLibrary() {
     apartFrom.set(link.face_b, (apartFrom.get(link.face_b) ?? new Set()).add(link.face_a));
   }
 
+  const conflicts = conflictingSources(rows);
   const clusters = strong.map((face) => ({
     faces: [face.id],
-    sources: new Set([sourceOf(face)]), // what may never share a group: a photo, or one track
+    sources: new Set([sourceOf(face)]),
+    // the sources this group can never take in: everyone it is already on screen with
+    rivals: new Set(conflicts.get(sourceOf(face)) ?? []),
     photos: new Set([face.photo_id]), // how many pictures a person is in, for ordering them
     blocked: new Set(apartFrom.get(face.id) ?? []), // faces this group may never take in
   }));
+  // Two views of the same pairs, both kept up to date as groups merge: `between` is the mean
+  // similarity between members, which is what decides the clustering, and `closest` is the best
+  // single pair, which is what the relative rule asks about. Recomputing `closest` from the faces
+  // each time would be hopeless — one thirty-two minute video makes hundreds of groups, and every
+  // sweep would compare every face with every other.
   const between = new Map<string, number>();
+  const closest = new Map<string, number>();
   const key = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`;
   for (let i = 0; i < clusters.length; i++) {
     for (let j = i + 1; j < clusters.length; j++) {
-      between.set(key(i, j), similarity(vectors.get(clusters[i].faces[0])!, vectors.get(clusters[j].faces[0])!));
+      const value = similarity(vectors.get(clusters[i].faces[0])!, vectors.get(clusters[j].faces[0])!);
+      between.set(key(i, j), value); // one face each to start with, so the two agree
+      closest.set(key(i, j), value);
     }
   }
 
@@ -253,6 +337,7 @@ export async function regroupLibrary() {
   const absorb = (a: number, b: number) => {
     clusters[a].faces.push(...clusters[b].faces);
     clusters[b].sources.forEach((source) => clusters[a].sources.add(source));
+    clusters[b].rivals.forEach((source) => clusters[a].rivals.add(source));
     clusters[b].photos.forEach((photo) => clusters[a].photos.add(photo));
     clusters[b].blocked.forEach((face) => clusters[a].blocked.add(face));
     alive.delete(b);
@@ -263,6 +348,10 @@ export async function regroupLibrary() {
       const merged =
         ((between.get(key(a, c)) ?? 0) * sizeA + (between.get(key(b, c)) ?? 0) * sizeB) / (sizeA + sizeB);
       between.set(key(a, c), merged); // average linkage: the mean similarity between members
+      closest.set(
+        key(a, c),
+        Math.max(closest.get(key(a, c)) ?? -Infinity, closest.get(key(b, c)) ?? -Infinity),
+      );
     }
     size.set(a, sizeA + sizeB);
   };
@@ -293,7 +382,7 @@ export async function regroupLibrary() {
     // Never put two faces of one photo, or two tracks of one video, in the same group — and
     // never undo a face you took out of a group by hand.
     const forbidden =
-      [...clusters[best.b].sources].some((source) => clusters[best.a].sources.has(source)) ||
+      [...clusters[best.b].sources].some((source) => clusters[best.a].rivals.has(source)) ||
       clusters[best.b].faces.some((face) => clusters[best.a].blocked.has(face)) ||
       clusters[best.a].faces.some((face) => clusters[best.b].blocked.has(face));
     if (forbidden) {
@@ -320,18 +409,8 @@ export async function regroupLibrary() {
   // — sitting alone below the 0.45 bar, even when it is three times closer to its own person
   // than to anybody else. Without this pass, pressing "Regroup everything" would undo the very
   // matches the app made when the pictures arrived.
-  const closestBetween = (a: number, b: number) => {
-    let best = -Infinity;
-    for (const one of clusters[a].faces) {
-      for (const other of clusters[b].faces) {
-        const value = similarity(vectors.get(one)!, vectors.get(other)!);
-        if (value > best) best = value;
-      }
-    }
-    return best;
-  };
   const forbidden = (a: number, b: number) =>
-    [...clusters[b].sources].some((source) => clusters[a].sources.has(source)) ||
+    [...clusters[b].sources].some((source) => clusters[a].rivals.has(source)) ||
     clusters[b].faces.some((face) => clusters[a].blocked.has(face)) ||
     clusters[a].faces.some((face) => clusters[b].blocked.has(face));
 
@@ -341,7 +420,7 @@ export async function regroupLibrary() {
       if (!alive.has(a)) continue;
       const ranked = [...alive]
         .filter((b) => b !== a && !forbidden(a, b))
-        .map((b) => ({ b, value: closestBetween(a, b) }))
+        .map((b) => ({ b, value: closest.get(key(a, b)) ?? -Infinity }))
         .sort((x, y) => y.value - x.value);
       const [best, runnerUp] = ranked;
       // Needs a runner-up: "closer to them than to anyone else" says nothing when there is
@@ -388,7 +467,7 @@ export async function regroupLibrary() {
       })
       .filter(
         (option) =>
-          !groups[option.index].sources.has(sourceOf(face)) &&
+          !groups[option.index].rivals.has(sourceOf(face)) &&
           !groups[option.index].faces.some((other) => apartFrom.get(face.id)?.has(other)),
       )
       .sort((x, y) => y.value - x.value);
