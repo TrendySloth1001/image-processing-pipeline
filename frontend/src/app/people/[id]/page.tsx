@@ -5,7 +5,7 @@ import { FaceCrop } from "@/components/FaceCrop";
 import { clock } from "@/components/MediaTile";
 import { ensureSchema, sql } from "@/db";
 import { config } from "@/lib/config";
-import { photoUrl, videoUrl } from "@/lib/photoUrl";
+import { facePicture, photoUrl, videoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -160,40 +160,50 @@ export default async function PersonPage({
         </section>
       )}
 
-      {/* Each tile pairs the picture with the face that put it in this group. A video tile is the
-          still from the appearance, and opens the video at the moment that appearance begins. */}
+      {/* One tile per photo, and per appearance in a video. A video tile shows the face as it was
+          caught, not the film's cover: every appearance of a thirty-minute clip otherwise looks
+          exactly the same. Clicking opens that frame full size; the time opens the video there. */}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-1">
         {tiles.map((tile) => {
           const isVideo = tile.kind === "video";
           const start = tile.track_first_ms ?? 0;
+          const frame = facePicture(tile);
           return (
             <div key={`${tile.photo_id}:${tile.track ?? ""}`} className="group relative">
               <a
-                href={
-                  isVideo
-                    ? `${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`
-                    : photoUrl(tile.photo_id, tile.key)
-                }
+                href={isVideo ? frame.src : photoUrl(tile.photo_id, tile.key)}
                 target="_blank"
                 rel="noreferrer"
+                title={isVideo ? "The frame this face was caught in" : tile.name}
                 className="block"
               >
-                <img
-                  src={photoUrl(tile.photo_id, tile.key)}
-                  alt={tile.name}
-                  className="aspect-square w-full rounded object-cover"
-                />
+                {isVideo ? (
+                  <FaceCrop face={tile} fill zoom={2.2} className="rounded" />
+                ) : (
+                  <img
+                    src={photoUrl(tile.photo_id, tile.key)}
+                    alt={tile.name}
+                    className="aspect-square w-full rounded object-cover"
+                  />
+                )}
               </a>
-              {isVideo && (
-                <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1.5 text-[11px] text-white">
+              {isVideo ? (
+                <a
+                  href={`${videoUrl(tile.photo_id, tile.key)}#t=${Math.max(0, Math.floor(start / 1000))}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Play the video from here"
+                  className="absolute bottom-1 left-1 rounded bg-black/65 px-1.5 text-[11px] text-white hover:bg-black/85"
+                >
                   ▶ {clock(start)}–{clock(tile.track_last_ms ?? start)}
-                </span>
+                </a>
+              ) : (
+                <FaceCrop
+                  face={tile}
+                  size={44}
+                  className="pointer-events-none absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
+                />
               )}
-              <FaceCrop
-                face={tile}
-                size={44}
-                className="pointer-events-none absolute bottom-1 right-1 rounded-full shadow ring-2 ring-white/90"
-              />
               {tiles.length > 1 && (
                 <form action="/api/split" method="post" className="absolute right-1 top-1">
                   <input type="hidden" name="from" value={id} />
