@@ -28,13 +28,23 @@ async def webhook(request: Request):
     payload = json.loads(body)
 
     seen[job_id] = seen.get(job_id, 0) + 1
+    # A photo delivers faces; a video delivers tracks, each holding a few faces, plus the count
+    # at every stage of the funnel it came down.
+    tracks = payload.get("tracks", [])
+    first = (tracks[0]["faces"][0] if tracks and tracks[0]["faces"]
+             else (payload["faces"][0] if payload.get("faces") else None))
     line = {
         "job_id": job_id,
         "attempt": attempt,
         "signature_ok": hmac.compare_digest(expected, request.headers.get("x-face-signature", "")),
+        "kind": payload.get("kind", "image"),
         "status": payload.get("status"),
-        "faces": len(payload.get("faces", [])),
-        "embedding_length": len(payload["faces"][0]["embedding"]) if payload.get("faces") else 0,
+        "faces": len(payload.get("faces", [])) or sum(len(t["faces"]) for t in tracks),
+        "tracks": len(tracks),
+        "stages": payload.get("stages"),
+        "still": first.get("still") if first else None,
+        "embedding_length": len(first["embedding"]) if first else 0,
+        "took_ms": payload.get("took_ms"),
         "metadata": payload.get("metadata"),
     }
     print(json.dumps(line), flush=True)
