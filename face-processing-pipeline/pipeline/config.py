@@ -53,7 +53,31 @@ VIDEO_MAX_SIDE = int(os.environ.get("VIDEO_MAX_SIDE", "1280"))
 VIDEO_MAX_SECONDS = float(os.environ.get("VIDEO_MAX_SECONDS", "0"))  # 0 = the whole video
 VIDEO_READ_CHUNK = int(os.environ.get("VIDEO_READ_CHUNK", str(4 * 1024 * 1024)))  # bytes per range request
 
+# --- Stage 3: the gate, which decides what the full detector is worth running on ---
+# "none"   run the full detector on every sampled frame. The default, because it is the only one
+#          of the three that costs nothing in accuracy.
+# "scout"  a cheap detector pass at SCOUT_INPUT_SIZE; the full one runs only where it saw
+#          something. Measured on phone video: 30% off a clip where people come and go, at the
+#          cost of one appearance in thirteen; nothing at all to gain where somebody is on screen
+#          throughout, and about 6% to lose.
+# "motion" the frame-difference gate: keep a frame only if it differs enough from the last kept
+#          one. Measured on the same video: every frame passes, because the camera itself moves
+#          (median difference 26 of 255). It earns its keep on a camera that does not move.
+VIDEO_GATE = os.environ.get("VIDEO_GATE", "none")
+MOTION_GATE_THRESHOLD = float(os.environ.get("MOTION_GATE_THRESHOLD", "4"))
+# A gate's job is to say "maybe", not "yes", so the scout runs small and forgiving: at 192px it
+# costs a tenth of the full pass, and dropping its threshold from 0.5 to 0.2 recovers most of
+# what it would otherwise miss for almost nothing.
+SCOUT_INPUT_SIZE = int(os.environ.get("SCOUT_INPUT_SIZE", "192"))
+SCOUT_THRESHOLD = float(os.environ.get("SCOUT_THRESHOLD", "0.2"))
+
 # --- Tracking (one person's continuous appearance in a video) ---
+# "appearance" follows a face by what it looks like, which needs an embedding for every sighting
+#              but survives two frames a second, where a walking person moves further than their
+#              own face between samples.
+# "motion"     follows it by where the box was, and then embeds only the few faces each track
+#              keeps — much less embedding, and much weaker at a low sampling rate.
+TRACK_BY = os.environ.get("TRACK_BY", "appearance")
 TRACK_FACES = int(os.environ.get("TRACK_FACES", "3"))  # representative faces delivered per track
 TRACK_SAME_FACE = 0.5      # embedding agreement that alone says "same appearance"
 TRACK_NEAR_FACE = 0.3      # weaker agreement, accepted only when the box barely moved

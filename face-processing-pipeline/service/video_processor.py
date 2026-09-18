@@ -12,8 +12,8 @@ Nothing is written to disk, and nothing is kept between jobs.
 import time
 from pathlib import Path
 
-from pipeline import detect, embed, quality, video
-from pipeline.config import DETECTOR_MODEL, EMBEDDER_MODEL, VIDEO_FPS
+from pipeline import detect, embed, gate as gates, quality, video
+from pipeline.config import DETECTOR_MODEL, EMBEDDER_MODEL, TRACK_BY, VIDEO_FPS, VIDEO_GATE
 from pipeline.track import Tracker
 from service.processor import models
 
@@ -31,18 +31,30 @@ def _face_payload(face, extra: dict) -> dict:
     }
 
 
-def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) -> dict:
-    """`source` is a path or a seekable file object; `store(name, jpeg) -> key` files the stills."""
+def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None,
+                  gate: str = VIDEO_GATE, track_by: str = TRACK_BY) -> dict:
+    """`source` is a path or a seekable file object; `store(name, jpeg) -> key` files the stills.
+
+    A funnel, narrowing at every stage: every frame in the file, then a few a second, then the
+    ones the gate thinks are worth detecting on, then one record per person rather than one per
+    sighting. The counts at each stage come back in the result so the shape of the funnel can be
+    seen for a real video rather than assumed.
+    """
     detector, embedder = models()
     started = time.time()
-    tracker = Tracker()
-    sampled = detected = 0
+    tracker = Tracker(by=track_by)
+    sampled = gated = detected = observations = 0
     poster = None
 
+    keeper = gates.build(gate)
     with video.open_video(source, fps=fps) as (info, frames):
         for at_ms, frame in frames:
             if poster is None:
                 poster = video.poster(frame)
+            sampled += 1
+            if not keeper.passes(frame):
+                continue
+            gated += 1
             found = detect.detect_faces(detector, frame, NO_FILE)
             detected += len(found)
             # Video's own size and blur bars: the photo ones discard faces that go on to match
@@ -50,18 +62,23 @@ def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) ->
             # by having to survive more than one sampled frame.
             faces = [f for f in found if quality.is_usable(f, quality.VIDEO)]
             for face in faces:
-                embed.align_face(frame, face)
+                embed.align_face(frame, face)  # cheap, and quality needs the aligned crop
                 quality.score_face(face, quality.VIDEO)
-            # Every face of the frame in one batch: the tracker needs embeddings to decide who
-            # is who, and embedding costs a seventh of detecting, so there is nothing to save
-            # by embedding lazily.
-            embed.embed_faces(embedder, faces)
+            observations += len(faces)
+            keeper.report(len(faces))  # so a gate that rejected this frame can be caught out
+            # Following a face by what it looks like needs an embedding for every sighting.
+            # Following it by where it was does not, so that mode embeds at the end instead,
+            # once per kept face rather than once per sighting.
+            if track_by == "appearance":
+                embed.embed_faces(embedder, faces)
             tracker.update(at_ms, faces, frame)
-            sampled += 1
             if sampled % 50 == 0:
-                log(f"  {at_ms / 1000:.0f}s: {sampled} frames sampled, {len(tracker.tracks)} tracks so far")
+                log(f"  {at_ms / 1000:.0f}s: {sampled} sampled, {gated} detected on, "
+                    f"{len(tracker.tracks)} tracks so far")
 
     tracks = tracker.finish(sampled)
+    if track_by != "appearance":
+        embed.embed_faces(embedder, [kept.face for track in tracks for kept in track.faces])
     poster_key = store("poster", poster[0]) if poster else None
     # One upload per moment, however many people were on screen in it.
     frames = {
@@ -84,7 +101,17 @@ def process_video(source, store, fps: float = VIDEO_FPS, log=lambda *a: None) ->
         },
         "detector": f"{type(detector).__name__} ({DETECTOR_MODEL.name})",
         "embedding_model": f"ArcFace ({EMBEDDER_MODEL.name})",
-        "detected": detected,  # every detection in every sampled frame, before tracking
+        "detected": detected,  # every detection in every frame detected on, before tracking
+        # The funnel, stage by stage: n -> sampled -> gated -> observations -> tracks -> faces.
+        "stages": {
+            "gate": keeper.name,
+            "track_by": track_by,
+            "sampled": sampled,
+            "gated": gated,
+            "observations": observations,
+            "tracks": len(tracks),
+            "faces": sum(len(t.faces) for t in tracks),
+        },
         "tracks": [
             {
                 "track": index,

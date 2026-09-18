@@ -271,6 +271,58 @@ Settings: `VIDEO_FPS`, `VIDEO_MAX_SIDE` (1280, low enough that a frame takes one
 rather than five), `VIDEO_MAX_SECONDS`, `TRACK_FACES`, `MIN_TRACK_FRAMES`, and the track matching
 thresholds in `pipeline/config.py`.
 
+### The funnel, and what filtering it is worth
+
+Every stage of a video job is narrower than the one before, and the result carries the counts so
+the shape can be seen for a real file rather than assumed:
+
+```
+n frames in the file  ->  sampled at VIDEO_FPS  ->  the gate lets some through
+                      ->  face observations     ->  tracks  ->  a few faces each
+```
+
+The point of the shape is that complexity stays O(n) — the file has to be read — while the
+constant in front of it does not. What matters is therefore where the constant lives, and on this
+pipeline it is not where it looks: measured on a 35-second 720x1280 phone video, **decode 9.9%,
+detection 66.1%, embedding 24.0%** — 1.45 ms to decode a frame against 107 ms to detect on one.
+Filtering only pays if it removes detector passes.
+
+`VIDEO_GATE` chooses what does the filtering. All three were measured over three phone videos,
+against running the full detector on every sampled frame:
+
+| gate | people come and go | somebody on screen throughout | short clip |
+|---|---|---|---|
+| `none` (default) | — | — | — |
+| `scout` | **21% faster**, 12 of 13 appearances | 7% slower, all 13 | 4% slower, all 10 |
+| `motion` | nothing: every frame passes | nothing | nothing |
+
+- **`motion`** is the frame-difference gate: keep a frame only if it differs from the last one
+  kept. On handheld video the measured difference between frames half a second apart is 26 of
+  255, so every frame passes at any safe threshold and it saves nothing. It is the right gate for
+  a camera that does not move, and the wrong one for a phone.
+- **`scout`** runs the same detector at 192px first and lets the full pass through only where it
+  saw something — which works because 48% of sampled frames held nobody at all. It is off by
+  default because it is not free: it misses faces the full detector finds, and no threshold makes
+  it safe. It caught faces that reached it at 5.8px and missed others at 10.5px, since what
+  defeats it is blur and contrast, not size.
+
+Because the scout cannot know when it is wrong, it is **checked rather than trusted**: one
+rejected frame in four is detected on anyway, and once the full detector has found faces in two
+of those the gate stands down for the rest of the video. That is what keeps it honest on footage
+it cannot read — on a clip of 36px faces under motion blur it threw away three appearances of
+five before the audit was added, and none afterwards.
+
+`TRACK_BY` chooses how a face is followed between frames:
+
+- **`appearance`** (default) matches on the embedding, which means embedding every sighting.
+- **`motion`** matches on where the box was and embeds only the few faces each track keeps. It is
+  18-31% faster and measurably worse: 8 of 13 appearances survived on one clip, 9 of 10 on
+  another, and on a third it cut one person into 19 appearances instead of 13. Two frames a
+  second is simply too slow for boxes to overlap — a walking person moves further than their own
+  face between samples.
+
+Settings: `VIDEO_GATE`, `SCOUT_INPUT_SIZE`, `SCOUT_THRESHOLD`, `MOTION_GATE_THRESHOLD`, `TRACK_BY`.
+
 **Not built: progressive delivery.** A long video delivers one webhook at the end. Sending a
 webhook per segment would show people while the video is still processing, but it turns one
 idempotent delivery into a sequence the consumer has to reassemble, and the retry contract has to

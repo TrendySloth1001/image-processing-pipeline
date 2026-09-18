@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from pipeline.config import (MIN_TRACK_FRAMES, TRACK_FACES, TRACK_IOU, TRACK_MAX_GAP_MS,
-                             TRACK_NEAR_FACE, TRACK_REDUNDANT, TRACK_SAME_FACE)
+from pipeline.config import (MIN_TRACK_FRAMES, TRACK_BY, TRACK_FACES, TRACK_IOU,
+                             TRACK_MAX_GAP_MS, TRACK_NEAR_FACE, TRACK_REDUNDANT,
+                             TRACK_SAME_FACE)
 from pipeline.entities import Face
 from pipeline.video import frame_still
 
@@ -52,7 +53,9 @@ class Track:
     def quality(self) -> float:
         return max((kept.face.quality for kept in self.faces), default=0.0)
 
-    def similarity(self, embedding: np.ndarray) -> float:
+    def similarity(self, embedding: np.ndarray | None) -> float:
+        if embedding is None or self.mean is None or self.last is None:
+            return 0.0
         """Against the average face and against the last one: whichever agrees more.
 
         The average is steady over a long appearance; the last frame follows a head that is
@@ -61,10 +64,13 @@ class Track:
         return max(float(embedding @ self.mean), float(embedding @ self.last))
 
     def _absorb(self, face: Face, at_ms: int, frame_index: int) -> None:
-        weight = self.frames
-        self.mean = (self.mean * weight + face.embedding) / (weight + 1)
-        self.mean = self.mean / np.linalg.norm(self.mean)
-        self.last = face.embedding
+        # Following a face by where it was rather than what it looks like means there is no
+        # embedding yet; the few faces the track keeps are embedded once it is finished.
+        if face.embedding is not None:
+            weight = self.frames
+            self.mean = face.embedding.copy() if self.mean is None else (self.mean * weight + face.embedding) / (weight + 1)
+            self.mean = self.mean / np.linalg.norm(self.mean)
+            self.last = face.embedding
         self.last_box = face.bbox
         self.last_ms = at_ms
         self.frames += 1
@@ -78,6 +84,8 @@ class Track:
         """
         twin, closest = -1, TRACK_REDUNDANT
         for index, kept in enumerate(self.faces):
+            if face.embedding is None or kept.face.embedding is None:
+                break  # nothing to compare yet: quality alone decides which faces are kept
             agreement = float(face.embedding @ kept.face.embedding)
             if agreement >= closest:
                 twin, closest = index, agreement
@@ -111,7 +119,8 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 class Tracker:
     """Feed it the faces of each sampled frame in order; ask it for the tracks at the end."""
 
-    def __init__(self) -> None:
+    def __init__(self, by: str = TRACK_BY) -> None:
+        self.by = by
         self.tracks: list[Track] = []
         self.frame_index = -1
         self.frames: dict[int, tuple[bytes, int, int]] = {}  # moment -> the whole frame, as a JPEG
@@ -129,7 +138,8 @@ class Tracker:
             track = self._best_match(face, at_ms)
             if track is None:
                 track = Track(id=len(self.tracks), first_ms=at_ms, last_ms=at_ms,
-                              mean=face.embedding.copy(), last=face.embedding)
+                              mean=None if face.embedding is None else face.embedding.copy(),
+                              last=face.embedding)
                 self.tracks.append(track)
             track._absorb(face, at_ms, self.frame_index)
             track._offer(face, at_ms, frame, self._remember)
@@ -141,8 +151,14 @@ class Tracker:
                 continue  # one track takes at most one face per frame: two faces are two people
             if at_ms - track.last_ms > TRACK_MAX_GAP_MS:
                 continue  # gone long enough that this is a fresh appearance, not the same one
-            agreement = track.similarity(face.embedding)
             overlap = iou(face.bbox, track.last_box)
+            if self.by == "motion":
+                # Only where the box was. Cheap, and it needs the sampling rate to be high
+                # enough that a face still overlaps itself from one frame to the next.
+                if overlap >= TRACK_IOU and overlap > score:
+                    best, score = track, overlap
+                continue
+            agreement = track.similarity(face.embedding)
             same = agreement >= TRACK_SAME_FACE or (overlap >= TRACK_IOU and agreement >= TRACK_NEAR_FACE)
             if same and agreement > score:
                 best, score = track, agreement
