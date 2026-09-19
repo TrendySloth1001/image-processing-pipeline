@@ -26,7 +26,7 @@ docker compose up -d --scale worker=3 worker      # more consumers, same queue
 | What | Where |
 |---|---|
 | Producer API (docs) | http://localhost:8080/docs |
-| Next.js app | http://localhost:3000 |
+| Next.js app | http://localhost:2001 |
 | MinIO console | http://localhost:9001 (minioadmin / minioadmin) |
 | Folder-based test UI | http://localhost:8000 |
 
