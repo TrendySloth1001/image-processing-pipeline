@@ -32,6 +32,8 @@ type Result = {
   status: "succeeded" | "failed";
   metadata?: { photoId?: number };
   image?: { width: number; height: number };
+  // A JPEG of what the pipeline actually decoded, so the browser never has to open a HEIC.
+  preview?: { key: string; width: number; height: number } | null;
   video?: {
     width: number;
     height: number;
@@ -141,7 +143,7 @@ export async function POST(request: Request) {
   await sql`
     UPDATE photos
        SET status = 'processed', width = ${result.image?.width ?? null}, height = ${result.image?.height ?? null},
-           error = NULL
+           poster_key = COALESCE(${result.preview?.key ?? null}, poster_key), error = NULL
      WHERE id = ${photoId}`;
 
   return Response.json({ received: true, faces: result.faces?.length ?? 0 });

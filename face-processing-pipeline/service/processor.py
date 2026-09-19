@@ -3,7 +3,7 @@
 import time
 from pathlib import Path
 
-from pipeline import detect, embed, ingest, quality
+from pipeline import detect, embed, ingest, quality, video
 from pipeline.config import DETECTOR_MODEL, EMBEDDER_MODEL
 
 _models = {}
@@ -17,7 +17,15 @@ def models():
     return _models["detector"], _models["embedder"]
 
 
-def process(data: bytes) -> dict:
+def process(data: bytes, store=None) -> dict:
+    """`store(name, jpeg) -> key` files a preview, if the caller wants one.
+
+    A phone photo is often HEIC, which every browser refuses to draw and every decoder here
+    reads happily — so the app was serving bytes the page could not display and showing a broken
+    image for a picture the pipeline had already found faces in. The preview is the same decoded
+    image the faces were found in, as a JPEG, which means a consumer never has to decode anything
+    exotic and the boxes line up with it by construction. It is also a tenth of the size.
+    """
     detector, embedder = models()
     started = time.time()
 
@@ -30,8 +38,12 @@ def process(data: bytes) -> dict:
     embed.embed_faces(embedder, faces)
 
     height, width = image.shape[:2]
+    preview = None
+    if store is not None:
+        preview = {"key": store("preview", video.encode_jpeg(image)), "width": width, "height": height}
     return {
         "image": {"width": width, "height": height},
+        "preview": preview,
         "detector": f"{type(detector).__name__} ({DETECTOR_MODEL.name})",
         "embedding_model": f"ArcFace ({EMBEDDER_MODEL.name})",
         "detected": len(found),  # before the minimum-size filter

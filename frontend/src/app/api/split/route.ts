@@ -1,4 +1,5 @@
 import { ensureSchema, sql } from "@/db";
+import { goTo } from "@/lib/redirect";
 
 export const runtime = "nodejs";
 
@@ -17,11 +18,11 @@ export async function POST(request: Request) {
   const form = await request.formData();
   const faceId = Number(form.get("face"));
   const from = Number(form.get("from"));
-  if (!faceId || !from) return Response.redirect(new URL(`/people/${from || ""}`, request.url), 303);
+  if (!faceId || !from) return goTo(`/people/${from || ""}`);
 
   const [face] = await sql<{ photo_id: number; track: number | null }[]>`
     SELECT photo_id, track FROM faces WHERE id = ${faceId} AND person_id = ${from}`;
-  if (!face) return Response.redirect(new URL(`/people/${from}`, request.url), 303);
+  if (!face) return goTo(`/people/${from}`);
 
   const moving = await sql<{ id: number }[]>`
     SELECT id FROM faces
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
      ORDER BY quality DESC LIMIT 1`;
   if (staying.length === 0) {
     const notice = "That is the only picture this person has, so there is nothing to take it out of.";
-    return Response.redirect(new URL(`/people/${from}?notice=${encodeURIComponent(notice)}`, request.url), 303);
+    return goTo(`/people/${from}`, notice);
   }
 
   const [person] = await sql<{ id: number }[]>`INSERT INTO people DEFAULT VALUES RETURNING id`;
@@ -46,5 +47,5 @@ export async function POST(request: Request) {
     INSERT INTO links (face_a, face_b, kind) VALUES (${moving[0].id}, ${staying[0].id}, 'different')`;
 
   const notice = `Moved ${moving.length} face${moving.length === 1 ? "" : "s"} out to person ${person.id}. Regrouping will keep them apart.`;
-  return Response.redirect(new URL(`/people/${from}?notice=${encodeURIComponent(notice)}`, request.url), 303);
+  return goTo(`/people/${from}`, notice);
 }

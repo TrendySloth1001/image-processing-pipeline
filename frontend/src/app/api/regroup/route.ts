@@ -1,5 +1,6 @@
 import { ensureSchema } from "@/db";
 import { regroupLibrary } from "@/lib/grouping";
+import { goTo } from "@/lib/redirect";
 
 export const runtime = "nodejs";
 
@@ -7,5 +8,5 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   await ensureSchema();
   await regroupLibrary();
-  return Response.redirect(new URL("/", request.url), 303);
+  return goTo("/");
 }

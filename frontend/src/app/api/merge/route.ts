@@ -1,4 +1,5 @@
 import { ensureSchema, sql } from "@/db";
+import { goTo } from "@/lib/redirect";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
   const into = Number(form.get("into"));
 
   if (!from || !into || from === into) {
-    return Response.redirect(new URL(`/people/${from || into || ""}`, request.url), 303);
+    return goTo(`/people/${from || into || ""}`);
   }
 
   const [a] = await sql<{ id: number }[]>`
@@ -31,5 +32,5 @@ export async function POST(request: Request) {
   await sql`DELETE FROM people WHERE id = ${from}`;
 
   const notice = `Merged person ${from} into person ${into}: ${moved.count} faces moved. Regrouping will keep them together.`;
-  return Response.redirect(new URL(`/people/${into}?notice=${encodeURIComponent(notice)}`, request.url), 303);
+  return goTo(`/people/${into}`, notice);
 }

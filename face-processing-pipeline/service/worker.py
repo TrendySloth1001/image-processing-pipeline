@@ -68,7 +68,10 @@ def handle(job_id: str, log=print) -> None:
                 f"{result['video']['sampled_frames']} sampled frames "
                 f"({result['detected']} detections) in {result['took_ms']}ms")
         else:
-            result = {"status": "succeeded", **process(fetch(media))}
+            def store(name: str, jpeg: bytes) -> str:
+                return storage.put_bytes(f"stills/{job_id}/{name}.jpg", jpeg, "image/jpeg")
+
+            result = {"status": "succeeded", **process(fetch(media), store)}
             log(f"job {job_id}: {len(result['faces'])} face(s) of {result['detected']} detected "
                 f"in {result['took_ms']}ms")
     except Exception as e:

@@ -1,5 +1,6 @@
 import { ensureSchema, sql } from "@/db";
 import { deleteObjects, listKeys } from "@/lib/s3";
+import { goTo } from "@/lib/redirect";
 
 export const runtime = "nodejs";
 
@@ -23,5 +24,5 @@ export async function POST(request: Request) {
   await sql`TRUNCATE faces, people, photos RESTART IDENTITY CASCADE`;
 
   const notice = `Deleted ${counts.photos} photos, ${counts.faces} faces and ${counts.people} people, and removed ${removed} files from storage.`;
-  return Response.redirect(new URL(`/?notice=${encodeURIComponent(notice)}`, request.url), 303);
+  return goTo("/", notice);
 }
