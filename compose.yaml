@@ -5,7 +5,7 @@ x-env: &env
   # 4 threads per worker, because past that the gain per core collapses. For more throughput
   # run more workers: docker compose up -d --scale worker=2
   ORT_THREADS: "4"
-  MAX_DECODE_SIDE: "2048"
+  MAX_DECODE_SIDE: "3072"
   REDIS_URL: redis://redis:6379/0
   S3_ENDPOINT: http://minio:9000
   S3_BUCKET: faces

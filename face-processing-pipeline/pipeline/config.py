@@ -19,9 +19,17 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 
 # --- Ingest ---
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
-# Photos are decoded no larger than this. The detector works at 640px, so a 12-megapixel phone
-# photo carries no extra information for it, only cost. None keeps the original size.
-MAX_DECODE_SIDE = int(os.environ.get("MAX_DECODE_SIDE", "2048"))
+# Photos are decoded no larger than this. It is not about what the detector sees — that works at
+# 640px whatever you give it, and the overlapping tiles below are what reach small faces — it is
+# about how many real pixels a face still has once it is found, because the crop that becomes an
+# embedding is cut from this image and the size bar below is measured on it.
+#
+# 2048 was fine for photos of one or two people and quietly wrong for a group. Measured on a
+# photograph of sixteen people: the detector found 29 faces either way, but at 2048 their median
+# size was 38px so MIN_FACE_SIZE discarded 18 of them, while at 3072 the median is 57px and all
+# 29 survive — for the same 1.3 seconds, since decoding is a twentieth of the work and libjpeg
+# scales for free. Above 3072 nothing more is gained on that photo.
+MAX_DECODE_SIDE = int(os.environ.get("MAX_DECODE_SIDE", "3072"))
 
 # --- CPU ---
 # Threads per ONNX session. Past 4 the gain is small, so run more workers instead:
@@ -93,7 +101,13 @@ POSTER_MAX_SIDE = 1280     # the video's own thumbnail, cut from its first sampl
 
 # --- Quality ---
 MIN_FACE_SIZE = 40       # px, shorter side of the face box; smaller faces are ignored entirely
-STRONG_FACE_SIZE = 80    # px; a face must be at least this big to help build groups
+# px; below this a face may join someone it matches but may not start a person or build a group.
+# 80 was another number from photographs of one or two people. In a photograph of thirty, every
+# face is 50-62px even decoded at 3072 — sharp (blur ~400) and looking straight at the camera
+# (yaw 0.06) — and at 80 the whole picture counted as weak, so nobody in it could be recognised
+# as anybody. 45 sits just above the 40 that video already uses successfully, and video has the
+# harder job: those faces are 34-49px and still match their own person at 0.69-0.77.
+STRONG_FACE_SIZE = 45
 MIN_BLUR_SCORE = 50.0    # sharpness of the aligned crop; below this it's too blurry to build groups
 MAX_YAW_RATIO = 0.5      # how far the head may be turned (0 = looking straight at the camera)
 
