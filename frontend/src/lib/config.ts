@@ -14,7 +14,12 @@ export const config = {
   },
   // Cosine similarity, same meaning as the pipeline's thresholds but applied here, where the vectors live.
   sameFace: Number(process.env.SAME_FACE ?? 0.45), // a strong face joins a person above this
-  attachFace: Number(process.env.ATTACH_FACE ?? 0.5), // weak faces need to be closer, and never start a person
+  // A weak face — small, blurred, half-turned — used to need 0.5, on the theory that a face you
+  // can barely see should have to be more convincing. Watching the pairs that landed between the
+  // two bars says otherwise: they were the same person almost every time, and the extra 0.05 was
+  // buying nothing but faces left with nobody. One bar, both kinds. A weak face still may not
+  // *start* a person, which is the rule that actually protects against inventing people.
+  attachFace: Number(process.env.ATTACH_FACE ?? 0.45),
   // Starting a new person is stricter than joining one. A face turned further than this can join
   // someone it matches, but never becomes a person of its own: that is what turned one man's
   // profile shot into a second person.

@@ -347,8 +347,9 @@ the app container, so imports resolve without installing anything on the Mac. It
 
 ## Grouping rules and tuning
 
-**Joining a person is easy, starting one is not.** A face joins someone at 0.45 similarity (0.5 if
-it is weak), but to *start* a new person it must be strong and roughly facing the camera
+**Joining a person is easy, starting one is not.** A face joins someone at 0.45 similarity,
+whether it is strong or weak, but to *start* a new person it must be strong and roughly facing
+the camera
 (`CREATE_MAX_YAW`, default 0.35). Without that asymmetry a single profile shot of a man already in
 the library becomes a second person, which is exactly what happened before the rule existed.
 
@@ -401,6 +402,12 @@ one in a click. **not them** on any picture takes it back out into a person of i
 remembered: a merge as a `same` link and a split as a `different` link, and regrouping honours
 both, so neither decision is undone by the next clustering pass. An appearance in a video moves as
 a whole, because its frames are one person walking across one clip.
+
+A weak face needed 0.5 until the pairs that landed between the two bars were looked at: they
+were the same person almost every time, so the extra 0.05 bought nothing but faces left with
+nobody. Dropping it to 0.45 placed 23 more faces across a library of 693 **without creating a
+single new person or changing a single group** — the rule that stops people being invented is
+that a weak face may never start one, not that it joins reluctantly.
 
 Thresholds live in `frontend/src/lib/config.ts` (`SAME_FACE`, `ATTACH_FACE`, `CREATE_MAX_YAW`,
 `MATCH_FLOOR`, `MATCH_MARGIN`, `SUGGEST_FROM`) and `pipeline/config.py` (quality bars, video bars,
