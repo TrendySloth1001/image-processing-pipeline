@@ -11,7 +11,7 @@ face-processing-pipeline/   Python service
   web/                       folder-based test UI, a development helper (http://localhost:8000)
   scripts/                   check_env.py, echo_webhook.py
   data/                      photos in, results out, for the folder-based UI (never committed)
-frontend/                   Next.js app (http://localhost:3000)
+frontend/                   Next.js app (http://localhost:2001)
 compose.yaml                api + worker + frontend + Redis + MinIO + Postgres
 ```
 
