@@ -40,7 +40,10 @@ const DDL = [
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS matched_face_id integer`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS match_similarity real`,
   `ALTER TABLE faces ADD COLUMN IF NOT EXISTS assigned_by text`,
-  `ALTER TABLE faces ADD COLUMN IF NOT EXISTS yaw real`,  // how far the head is turned
+  `ALTER TABLE faces ADD COLUMN IF NOT EXISTS yaw real`,
+  // Variance of the Laplacian of the aligned crop: high means sharp, low means blurred or
+  // simply too few real pixels. It is what tells a clean picture of somebody from a typical one.
+  `ALTER TABLE faces ADD COLUMN IF NOT EXISTS blur real`,  // how far the head is turned
   // A video is a row in `photos` too: everything that joins faces to people then works unchanged.
   // `kind` tells them apart, and the poster is the frame shown in place of the video.
   `ALTER TABLE photos ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'photo'`,

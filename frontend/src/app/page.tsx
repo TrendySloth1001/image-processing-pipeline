@@ -4,6 +4,7 @@ import { FaceOf } from "@/components/FaceCrop";
 import { MediaTile } from "@/components/MediaTile";
 import { UploadForm } from "@/components/UploadForm";
 import { ensureSchema, sql } from "@/db";
+import { coverFields, coverScore } from "@/lib/cover";
 import { photoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
@@ -50,13 +51,10 @@ export default async function Home({
            COUNT(DISTINCT f.photo_id)::int AS photos,
            COUNT(f.id)::int AS faces,
            COUNT(DISTINCT ph.id) FILTER (WHERE ph.kind = 'video')::int AS videos,
-           (SELECT json_build_object('face_id', best.id, 'photo_id', best.photo_id, 'key', b.key,
-                                     'bbox', best.bbox, 'width', b.width, 'height', b.height,
-                                     'still_key', best.still_key, 'still_width', best.still_width,
-                                     'still_height', best.still_height)
-              FROM faces best JOIN photos b ON b.id = best.photo_id
-             WHERE best.person_id = p.id
-             ORDER BY best.quality DESC LIMIT 1) AS cover
+           (SELECT ${coverFields}
+              FROM faces f JOIN photos pic ON pic.id = f.photo_id
+             WHERE f.person_id = p.id
+             ORDER BY ${coverScore} DESC LIMIT 1) AS cover
       FROM people p
       JOIN faces f ON f.person_id = p.id
       JOIN photos ph ON ph.id = f.photo_id

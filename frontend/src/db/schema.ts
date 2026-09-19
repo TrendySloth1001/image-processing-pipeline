@@ -42,6 +42,7 @@ export const faces = pgTable("faces", {
   detScore: real("det_score").notNull(),
   quality: real("quality").notNull(),
   isStrong: boolean("is_strong").notNull(),
+  blur: real("blur"), // sharpness of the aligned crop; higher is sharper
   embedding: vector("embedding", { dimensions: 512 }).notNull(),
   matchedFaceId: integer("matched_face_id"), // the face it was compared against
   matchSimilarity: real("match_similarity"), // how close they were, 1 = identical

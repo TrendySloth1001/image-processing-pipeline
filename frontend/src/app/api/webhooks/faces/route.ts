@@ -12,6 +12,7 @@ type Face = {
   quality: number;
   is_strong: boolean;
   yaw?: number;
+  blur?: number;
   embedding: number[];
   at_ms?: number;
   still?: { key: string; width: number; height: number };
@@ -56,6 +57,7 @@ const asRow = (photoId: number, face: Face, track: Track | null) => ({
   quality: face.quality,
   is_strong: face.is_strong,
   yaw: face.yaw ?? null,
+  blur: face.blur ?? null,
   embedding: toVector(face.embedding),
   track: track?.track ?? null,
   at_ms: face.at_ms ?? null,

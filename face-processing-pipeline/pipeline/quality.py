@@ -60,5 +60,6 @@ def score_face(face: Face, bars: Bars = PHOTO) -> None:
     blur = blur_score(face.aligned)
     yaw = yaw_ratio(face)
     face.yaw = yaw  # the consumer uses it to decide what may start a new person
+    face.blur = blur  # and this to decide which face of somebody is worth showing
     face.is_strong = size >= bars.strong_size and blur >= bars.min_blur and yaw <= bars.max_yaw
     face.quality = face.det_score * min(size / bars.strong_size, 1.0) * (1 - min(yaw, 1.0))

@@ -5,6 +5,7 @@ import { FaceOf } from "@/components/FaceCrop";
 import { MediaGrid, type Item } from "@/components/MediaGrid";
 import { ensureSchema, sql } from "@/db";
 import { config } from "@/lib/config";
+import { coverFields, coverScore } from "@/lib/cover";
 import { facePicture, photoUrl, videoUrl } from "@/lib/photoUrl";
 
 export const dynamic = "force-dynamic";
@@ -50,10 +51,10 @@ export default async function PersonPage({
   const rows = await sql<Row[]>`
     SELECT f.id AS face_id, f.photo_id, f.bbox, f.quality, f.is_strong, f.track,
            f.track_first_ms, f.track_last_ms, f.still_key, f.still_width, f.still_height,
-           p.key, p.name, p.kind, p.width, p.height
-      FROM faces f JOIN photos p ON p.id = f.photo_id
+           pic.key, pic.name, pic.kind, pic.width, pic.height
+      FROM faces f JOIN photos pic ON pic.id = f.photo_id
      WHERE f.person_id = ${person}
-     ORDER BY f.quality DESC`;
+     ORDER BY ${coverScore} DESC`;
   if (rows.length === 0) notFound();
 
   /**
@@ -71,12 +72,9 @@ export default async function PersonPage({
             GROUP BY o.person_id)
     SELECT s.id, s.similarity,
            (SELECT COUNT(DISTINCT photo_id)::int FROM faces WHERE person_id = s.id) AS photos,
-           (SELECT json_build_object('face_id', b.id, 'photo_id', b.photo_id, 'key', ph.key,
-                                     'bbox', b.bbox, 'width', ph.width, 'height', ph.height,
-                                     'still_key', b.still_key, 'still_width', b.still_width,
-                                     'still_height', b.still_height)
-              FROM faces b JOIN photos ph ON ph.id = b.photo_id
-             WHERE b.person_id = s.id ORDER BY b.quality DESC LIMIT 1) AS cover
+           (SELECT ${coverFields}
+              FROM faces f JOIN photos pic ON pic.id = f.photo_id
+             WHERE f.person_id = s.id ORDER BY ${coverScore} DESC LIMIT 1) AS cover
       FROM scored s
      WHERE s.similarity >= ${config.suggestFrom}
        AND NOT EXISTS (SELECT 1 FROM mine m JOIN faces o ON o.person_id = s.id
@@ -94,7 +92,7 @@ export default async function PersonPage({
      WHERE p.id <> ${person}
      GROUP BY p.id ORDER BY photos DESC, p.id`;
 
-  const cover = rows[0];
+  const cover = rows[0]; // best first, so this is the picture of them and each tile's is the best of that appearance
   // One tile per photo, and one per appearance in a video: the same person can be on screen
   // twice in one clip, and those are two things to show, not one.
   const tiles = [...new Map(rows.map((row) => [`${row.photo_id}:${row.track ?? ""}`, row])).values()];

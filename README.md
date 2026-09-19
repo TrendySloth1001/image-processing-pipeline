@@ -390,6 +390,22 @@ well enough to join either, they were the same person all along and are merged �
 a photo, which is proof they are not. That is the repair for a person built from photographs and
 the same person found in a video, when whichever arrived first was too different to match.
 
+**A person's picture is the cleanest face of them, not the highest-scoring one.** The pipeline's
+`quality` measures whether a face is *usable* — confidence times size times how straight the head
+is — which is the wrong question for a thumbnail, and it put the back of a head, a profile and a
+face half out of frame on the front page. `lib/cover.ts` asks the right one, from what is already
+stored: how sharp the face is against the sharpest that person has, how much it looks like the
+rest of them (which throws out a hand across a mouth or a face grouped there by mistake), how
+straight the head is, how sure the detector was, how big it is in real pixels, and how far it
+sits from the edge of the frame. Sharpness is the term that matters most and was the one missing:
+without it the score picks the most *typical* face, and in a library of video most of anybody's
+faces are mid-motion.
+
+Where a picture still looks poor, it is usually not the choice but the material — a person whose
+every face is 30 to 40 pixels has no good picture to choose. Their faces also agree with each
+other at 0.3 to 0.5, where a solid group sits at 0.6 to 0.9, which is a useful signal that the
+group itself is thin.
+
 **Pictures open in the app, not in a browser tab.** Clicking an appearance opens a viewer over
 the gallery: the frame with the face boxed on it, **Play** to watch the clip from the moment that
 appearance starts, arrow keys to step through the person's other pictures and Escape to close.

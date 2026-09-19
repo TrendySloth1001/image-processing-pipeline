@@ -22,6 +22,7 @@ class Face:
     quality: float = 0.0    # higher = better; used to pick each person's cover face
     is_strong: bool = False  # True = trustworthy enough to build groups from
     yaw: float = 0.0        # how far the head is turned; 0 = looking straight at the camera
+    blur: float = 0.0       # variance of the Laplacian of the aligned crop; higher = sharper
 
     # Filled by db.save_photo_faces / cluster.py
     db_id: int | None = None      # row id in the faces table
